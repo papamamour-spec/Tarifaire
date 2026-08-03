@@ -1,0 +1,18 @@
+{
+  "name": "Tarifaire — Prix de revient & politique tarifaire",
+  "short_name": "Tarifaire",
+  "description": "Du coût de revient débarqué au prix en rayon. Relevés de prix concurrents utilisables hors connexion.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#16302b",
+  "theme_color": "#16302b",
+  "lang": "fr",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='18' fill='%2316302b'/><text x='50' y='68' font-size='52' text-anchor='middle' fill='%23d99a2b' font-family='Georgia'>T</text></svg>",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

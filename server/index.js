@@ -7,10 +7,21 @@ const path = require('path');
 const express = require('express');
 const { init } = require('./db');
 const { login, authentifier } = require('./auth');
+const { entetesSecurite, limiteurDebit } = require('./security');
+const { specOpenApi } = require('./openapi');
 
 const app = express();
 app.disable('x-powered-by');
+app.set('trust proxy', 1);
+app.use(entetesSecurite);
 app.use(express.json({ limit: '20mb' }));
+
+// Limite globale souple, et limite stricte sur l'authentification (anti force brute)
+app.use('/api', limiteurDebit({ fenetreMs: 60_000, maximum: 300 }));
+const limiteConnexion = limiteurDebit({
+  fenetreMs: 15 * 60_000, maximum: 20,
+  message: 'Trop de tentatives de connexion, réessayez dans quelques minutes'
+});
 
 // Fichiers statiques de l'application web
 app.use(express.static(path.join(__dirname, '..', 'public')));
@@ -36,7 +47,10 @@ app.use('/api', (req, res, next) => {
   });
 });
 
-app.post('/api/connexion', (req, res, next) => login(req, res).catch(next));
+// Documentation de l'interface applicative (F-M10-01), accessible aux intégrateurs
+app.get('/api/docs', (req, res) => res.json(specOpenApi()));
+
+app.post('/api/connexion', limiteConnexion, (req, res, next) => login(req, res).catch(next));
 
 // Toutes les autres routes API exigent un jeton (F-M10-02)
 app.use('/api', authentifier);
@@ -48,6 +62,7 @@ app.use('/api/tarification', require('./routes/tarification'));
 app.use('/api/veille', require('./routes/veille'));
 app.use('/api/pilotage', require('./routes/pilotage'));
 app.use('/api/admin', require('./routes/admin'));
+app.use('/api/compte', require('./routes/compte'));
 
 // L'application web gère ses propres vues : toute autre route sert la page unique
 app.get(/^\/(?!api\/).*/, (req, res) => {

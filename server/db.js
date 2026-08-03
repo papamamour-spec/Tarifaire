@@ -394,7 +394,122 @@ CREATE TABLE IF NOT EXISTS journal_audit (
   detail TEXT,
   date_action TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Lot 1 : sécurité des comptes et inaltérabilité du journal
+ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS doit_changer_mdp BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS echecs_connexion INT NOT NULL DEFAULT 0;
+ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS verrou_jusqua TIMESTAMPTZ;
+ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS totp_secret TEXT;
+ALTER TABLE utilisateurs ADD COLUMN IF NOT EXISTS totp_actif BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE journal_audit ADD COLUMN IF NOT EXISTS hash_precedent TEXT;
+ALTER TABLE journal_audit ADD COLUMN IF NOT EXISTS hash TEXT;
+
+-- Lot 2 : ventes remontées, marge réalisée, révisions de coût, barèmes de provision, règles de validation
+CREATE TABLE IF NOT EXISTS ventes (
+  id SERIAL PRIMARY KEY,
+  article_code TEXT NOT NULL REFERENCES articles(code_interne),
+  point_de_vente_code TEXT,
+  date_vente DATE NOT NULL,
+  quantite NUMERIC NOT NULL DEFAULT 0,
+  ca_ttc NUMERIC NOT NULL DEFAULT 0,
+  cree_le TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ventes_article ON ventes(article_code, date_vente);
+
+CREATE TABLE IF NOT EXISTS revisions_cout (
+  id SERIAL PRIMARY KEY,
+  dossier_id INT NOT NULL REFERENCES dossiers(id) ON DELETE CASCADE,
+  article_code TEXT,
+  quantite NUMERIC NOT NULL DEFAULT 0,
+  stock_restant NUMERIC NOT NULL DEFAULT 0,
+  cout_unitaire_avant NUMERIC NOT NULL DEFAULT 0,
+  cout_unitaire_apres NUMERIC NOT NULL DEFAULT 0,
+  ajustement_stock NUMERIC NOT NULL DEFAULT 0,
+  ajustement_charge NUMERIC NOT NULL DEFAULT 0,
+  date_revision TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS baremes_provision (
+  nature TEXT PRIMARY KEY,
+  cle_repartition TEXT NOT NULL DEFAULT 'valeur',
+  mode TEXT NOT NULL DEFAULT 'pct_valeur',
+  valeur NUMERIC NOT NULL DEFAULT 0,
+  nb_dossiers INT NOT NULL DEFAULT 0,
+  dernier_dossier TEXT,
+  date_maj TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS regles_validation (
+  id SERIAL PRIMARY KEY,
+  taux_marque_min NUMERIC,
+  ecart_prix_max_pct NUMERIC,
+  actif BOOLEAN NOT NULL DEFAULT TRUE
+);
+
+-- Lot 3 : promotions, fichiers de pièces, notifications
+CREATE TABLE IF NOT EXISTS promotions (
+  id SERIAL PRIMARY KEY,
+  libelle TEXT NOT NULL,
+  article_code TEXT REFERENCES articles(code_interne),
+  famille_code TEXT REFERENCES familles(code),
+  format_code TEXT REFERENCES formats_magasin(code),
+  taux_remise NUMERIC NOT NULL,
+  date_debut DATE NOT NULL,
+  date_fin DATE NOT NULL,
+  marge_min NUMERIC NOT NULL DEFAULT 0,
+  statut TEXT NOT NULL DEFAULT 'prevue',
+  cree_le TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS pieces_fichiers (
+  id SERIAL PRIMARY KEY,
+  piece_id INT NOT NULL REFERENCES dossier_pieces(id) ON DELETE CASCADE,
+  nom_fichier TEXT NOT NULL,
+  type_mime TEXT NOT NULL,
+  taille INT NOT NULL,
+  contenu BYTEA NOT NULL,
+  televerse_le TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id SERIAL PRIMARY KEY,
+  destinataire_role TEXT,
+  destinataire_email TEXT,
+  titre TEXT NOT NULL,
+  corps TEXT,
+  lien TEXT,
+  lue BOOLEAN NOT NULL DEFAULT FALSE,
+  envoyee_courriel BOOLEAN NOT NULL DEFAULT FALSE,
+  cree_le TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_notif_role ON notifications(destinataire_role, lue);
 `;
+
+/* Index de recherche approchée (facultatif : nécessite le droit CREATE EXTENSION). */
+async function extensionsRecherche() {
+  try {
+    await query('CREATE EXTENSION IF NOT EXISTS pg_trgm');
+    await query(`CREATE INDEX IF NOT EXISTS idx_articles_libelle_trgm ON articles USING gin (libelle gin_trgm_ops)`);
+  } catch (e) {
+    console.warn('[base] pg_trgm indisponible (recherche non indexée) :', e.message);
+  }
+}
+
+/* Exécute fn dans une transaction ; fn reçoit une fonction query liée au client. */
+async function transaction(fn) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const resultat = await fn((text, params) => client.query(text, params));
+    await client.query('COMMIT');
+    return resultat;
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
 
 async function migrate() {
   await query(SCHEMA);
@@ -405,9 +520,10 @@ async function seed() {
   if (rows[0].n > 0) return;
 
   const hash = bcrypt.hashSync(process.env.ADMIN_PASSWORD || 'admin123', 10);
+  // Sans ADMIN_PASSWORD explicite, le mot de passe par défaut doit être changé à la première connexion.
   await query(
-    `INSERT INTO utilisateurs (email, mot_de_passe_hash, nom, role) VALUES ($1,$2,$3,'admin')`,
-    [process.env.ADMIN_EMAIL || 'admin@demo.sn', hash, 'Administrateur']
+    `INSERT INTO utilisateurs (email, mot_de_passe_hash, nom, role, doit_changer_mdp) VALUES ($1,$2,$3,'admin',$4)`,
+    [process.env.ADMIN_EMAIL || 'admin@demo.sn', hash, 'Administrateur', !process.env.ADMIN_PASSWORD]
   );
 
   await query(`INSERT INTO parametres (cle, valeur) VALUES
@@ -482,7 +598,8 @@ async function init() {
   }
   await attendreBase();
   await migrate();
+  await extensionsRecherche();
   await seed();
 }
 
-module.exports = { query, init };
+module.exports = { query, init, transaction };

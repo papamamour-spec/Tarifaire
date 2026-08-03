@@ -101,23 +101,35 @@ function enrichir(a) {
 }
 
 r.get('/articles', async (req, res) => {
-  const { q, famille, statut, incomplets } = req.query;
+  const { q, famille, statut, incomplets, page, taille } = req.query;
   const params = [];
-  let sql = `SELECT a.*, f.libelle AS famille_libelle FROM articles a
-             LEFT JOIN familles f ON f.code = a.famille_code WHERE 1=1`;
+  let filtre = ' WHERE 1=1';
   if (q) {
     params.push('%' + q.toLowerCase() + '%');
-    sql += ` AND (lower(a.code_interne) LIKE $${params.length} OR lower(a.libelle) LIKE $${params.length}
+    filtre += ` AND (lower(a.code_interne) LIKE $${params.length} OR lower(a.libelle) LIKE $${params.length}
              OR a.code_barres LIKE $${params.length} OR lower(a.reference_fournisseur) LIKE $${params.length}
              OR a.position_tarifaire LIKE $${params.length})`;
   }
-  if (famille) { params.push(famille); sql += ` AND a.famille_code=$${params.length}`; }
-  if (statut) { params.push(statut); sql += ` AND a.statut=$${params.length}`; }
-  sql += ' ORDER BY a.code_interne LIMIT 500';
-  const { rows } = await query(sql, params);
-  let liste = rows.map(enrichir);
-  if (incomplets === '1') liste = liste.filter(a => !a.complet);
-  res.json(liste);
+  if (famille) { params.push(famille); filtre += ` AND a.famille_code=$${params.length}`; }
+  if (statut) { params.push(statut); filtre += ` AND a.statut=$${params.length}`; }
+  if (incomplets === '1') {
+    filtre += ` AND (a.code_barres IS NULL OR a.unites_par_carton IS NULL OR a.poids_brut_carton IS NULL
+                OR a.volume_carton IS NULL OR a.position_tarifaire IS NULL OR a.origine IS NULL)`;
+  }
+  const base = `FROM articles a LEFT JOIN familles f ON f.code = a.famille_code${filtre}`;
+
+  // Mode paginé (F-M9 volumétrie) : ?page=1&taille=50 retourne { total, page, articles }
+  if (page) {
+    const t = Math.min(Math.max(parseInt(taille, 10) || 50, 10), 200);
+    const p = Math.max(parseInt(page, 10) || 1, 1);
+    const { rows: cRows } = await query(`SELECT COUNT(*)::int AS n ${base}`, params);
+    const { rows } = await query(
+      `SELECT a.*, f.libelle AS famille_libelle ${base} ORDER BY a.code_interne LIMIT ${t} OFFSET ${(p - 1) * t}`, params);
+    return res.json({ total: cRows[0].n, page: p, taille: t, articles: rows.map(enrichir) });
+  }
+
+  const { rows } = await query(`SELECT a.*, f.libelle AS famille_libelle ${base} ORDER BY a.code_interne LIMIT 500`, params);
+  res.json(rows.map(enrichir));
 });
 
 r.get('/articles/:code', async (req, res) => {

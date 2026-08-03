@@ -20,6 +20,24 @@ Plateforme de gestion du **coût de revient débarqué** et de la **politique ta
 
 Adapté au contexte ouest-africain : interface légère sans dépendance externe, franc CFA sans décimale, taxes en cascade type liquidation sénégalaise (DD/RS/PCS/PCC/COSEC/accises/TVA/acompte BIC), écritures d'esprit SYSCOHADA, interface en français.
 
+### Compléments (lots d'amélioration)
+
+| Domaine | Contenu |
+|---|---|
+| **Boucle de marge fermée** | Import des ventes ERP (flux FE07) et écran « Marge réalisée » : taux de marque réalisé vs théorique par référence, écarts signalés |
+| **Révision de coût** | Après facture tardive : recalcul, ventilation de l'ajustement entre stock restant et quantités vendues, alerte automatique à la direction sur les tarifs passés sous le plancher (UC10) |
+| **Barèmes de provision appris** | Chaque clôture de dossier alimente un barème par nature de coût ; les nouveaux dossiers peuvent être provisionnés en un clic pour tarifer sans attendre les factures (F-M5-07) |
+| **Validation par seuils** | Règle direction : marge minimale et écart maximal avec le tarif publié ; au-delà, la proposition passe en « à valider » (F-M8-04) |
+| **Promotions** | Campagnes par article ou famille avec simulation de la marge pendant la période et alerte sous marge minimale (F-M6-09) |
+| **Contrôles de cohérence** | Prix au kilo décroissant avec la taille, ordre de gamme (premier prix ≤ marque propre ≤ nationale), écart entre formats borné (F-M6-07/08) |
+| **Terrain hors connexion** | PWA installable, relevés mis en file locale hors réseau et synchronisés au retour, lecture du code barres par la caméra (F-M7-01/02) |
+| **Pièces numérisées** | Téléversement et téléchargement du document de chaque pièce du dossier (F-M4-02) |
+| **Notifications** | In-app avec badge, envoi courriel optionnel via Resend (`RESEND_API_KEY`, `COURRIEL_EXPEDITEUR`) |
+| **Sécurité durcie** | Verrouillage après 5 échecs, limitation de débit, en-têtes HTTP (CSP, HSTS…), changement de mot de passe forcé sur compte par défaut, **2FA TOTP** sans dépendance, **journal d'audit chaîné SHA-256** vérifiable (F-M11-05) |
+| **Fiabilité** | Transactions SQL sur calculs, imports et révisions ; insertions par lots ; pagination serveur ; index de recherche pg_trgm |
+| **Interopérabilité** | Documentation d'API sur `/docs.html` (spec JSON sur `/api/docs`, sans jeton) pour les intégrateurs ERP (F-M10-01) |
+| **Qualité** | 25 tests automatisés (unitaires + intégration complète contre PostgreSQL) exécutés en CI GitHub Actions sur chaque PR |
+
 ## Déploiement sur Railway
 
 1. **Créer un projet** sur [railway.app](https://railway.app) et y déployer ce dépôt GitHub (« Deploy from GitHub repo »). Railway détecte Node.js automatiquement (ou utilise le `Dockerfile`).

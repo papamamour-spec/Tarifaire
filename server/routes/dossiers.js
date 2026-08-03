@@ -1,11 +1,13 @@
 'use strict';
 /* Modules M4 (dossiers d'importation) et M5 (moteur de coût de revient). */
 const express = require('express');
-const { query } = require('../db');
+const { query, transaction } = require('../db');
 const { exiger, auditer } = require('../auth');
 const { parseCsv, toCsv, num, round } = require('../util');
 const { liquiderDeclaration } = require('../services/liquidation');
 const { calculerDossier } = require('../services/cout');
+const { apprendreBaremes, proposerProvisions } = require('../services/baremes');
+const { notifier } = require('../services/notifications');
 
 const r = express.Router();
 
@@ -50,7 +52,8 @@ r.get('/:id', async (req, res) => {
     query(`SELECT l.*, a.libelle AS article_libelle FROM dossier_lignes l
            LEFT JOIN articles a ON a.code_interne=l.article_code
            WHERE l.dossier_id=$1 ORDER BY l.rang`, [id]),
-    query('SELECT * FROM dossier_pieces WHERE dossier_id=$1 ORDER BY id', [id]),
+    query(`SELECT p.*, EXISTS (SELECT 1 FROM pieces_fichiers pf WHERE pf.piece_id=p.id) AS a_fichier
+           FROM dossier_pieces p WHERE p.dossier_id=$1 ORDER BY p.id`, [id]),
     query('SELECT * FROM dossier_couts WHERE dossier_id=$1 ORDER BY id', [id]),
     query(`SELECT da.*,
              (SELECT json_agg(t ORDER BY t.id) FROM declaration_taxes t WHERE t.declaration_article_id=da.id) AS taxes
@@ -75,7 +78,10 @@ r.post('/:id/statut', exiger('import'), async (req, res) => {
   sql += ' WHERE id=$2';
   await query(sql, [statut, req.params.id]);
   await auditer(req, 'changement_statut', 'dossier', req.params.id, statut);
-  res.json({ ok: true });
+  // À la clôture, les coûts constatés alimentent les barèmes de provision (F-M5-07)
+  let baremesAppris = 0;
+  if (statut === 'cloture') baremesAppris = await apprendreBaremes(req.params.id);
+  res.json({ ok: true, baremes_appris: baremesAppris });
 });
 
 /* ---------------- Lignes de facture ---------------- */
@@ -123,38 +129,60 @@ r.post('/:id/lignes-import/csv', exiger('import'), async (req, res) => {
   const id = req.params.id;
   const { contenu, remplacer } = req.body || {};
   if (!contenu) return res.status(400).json({ erreur: 'Contenu CSV requis' });
-  if (remplacer) await query('DELETE FROM dossier_lignes WHERE dossier_id=$1', [id]);
   const { records } = parseCsv(contenu);
-  let rang = Number((await query('SELECT COALESCE(MAX(rang),0) AS r FROM dossier_lignes WHERE dossier_id=$1', [id])).rows[0].r);
-  let importees = 0, appariees = 0; const rejets = [];
-  for (let i = 0; i < records.length; i++) {
-    const rec = records[i];
+
+  // Appariement en deux requêtes globales plutôt qu'une par ligne
+  const codesInternes = [...new Set(records.map(x => x.code_interne).filter(Boolean))];
+  const codesBarres = [...new Set(records.map(x => x.code_barres).filter(Boolean))];
+  const parCodeInterne = new Set(
+    codesInternes.length
+      ? (await query('SELECT code_interne FROM articles WHERE code_interne = ANY($1)', [codesInternes])).rows.map(x => x.code_interne)
+      : []);
+  const parCodeBarres = new Map(
+    codesBarres.length
+      ? (await query(
+          `SELECT code_barres, code_interne FROM articles WHERE code_barres = ANY($1)
+           UNION SELECT code_barres, article_code FROM codes_barres_secondaires WHERE code_barres = ANY($1)`,
+          [codesBarres])).rows.map(x => [x.code_barres, x.code_interne])
+      : []);
+
+  const rejets = [];
+  const valides = [];
+  records.forEach((rec, i) => {
     const qte = num(rec.quantite);
     const pu = num(rec.prix_unitaire ?? rec.prix_unitaire_devise);
-    if (qte === null || pu === null) { rejets.push({ ligne: i + 2, motif: 'quantité ou prix unitaire manquant' }); continue; }
+    if (qte === null || pu === null) { rejets.push({ ligne: i + 2, motif: 'quantité ou prix unitaire manquant' }); return; }
     let articleCode = null;
-    if (rec.code_interne) {
-      const { rows } = await query('SELECT code_interne FROM articles WHERE code_interne=$1', [rec.code_interne]);
-      if (rows.length) articleCode = rows[0].code_interne;
-    }
-    if (!articleCode && rec.code_barres) {
-      const { rows } = await query(
-        `SELECT code_interne FROM articles WHERE code_barres=$1
-         UNION SELECT article_code FROM codes_barres_secondaires WHERE code_barres=$1 LIMIT 1`, [rec.code_barres]);
-      if (rows.length) articleCode = rows[0].code_interne;
-    }
-    if (articleCode) appariees++;
-    rang++;
-    await query(
+    if (rec.code_interne && parCodeInterne.has(rec.code_interne)) articleCode = rec.code_interne;
+    if (!articleCode && rec.code_barres) articleCode = parCodeBarres.get(rec.code_barres) || null;
+    valides.push({
+      article_code: articleCode, code_barres: rec.code_barres || null, libelle: rec.libelle || null,
+      quantite: qte, nb_cartons: num(rec.nb_cartons), prix_unitaire_devise: pu,
+      montant_devise: num(rec.montant) ?? round(qte * pu, 2),
+      poids_brut: num(rec.poids_brut), volume: num(rec.volume), declaration_rang: num(rec.declaration_rang)
+    });
+  });
+
+  // Écriture atomique par lot : un import interrompu ne laisse aucun état partiel
+  await transaction(async q => {
+    if (remplacer) await q('DELETE FROM dossier_lignes WHERE dossier_id=$1', [id]);
+    const { rows: maxR } = await q('SELECT COALESCE(MAX(rang),0) AS r FROM dossier_lignes WHERE dossier_id=$1', [id]);
+    const base = Number(maxR[0].r);
+    const avecRang = valides.map((v, i) => ({ ...v, rang: base + i + 1 }));
+    await q(
       `INSERT INTO dossier_lignes (dossier_id, rang, article_code, code_barres, libelle, quantite, nb_cartons,
          prix_unitaire_devise, montant_devise, poids_brut, volume, declaration_rang)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-      [id, rang, articleCode, rec.code_barres || null, rec.libelle || null, qte, num(rec.nb_cartons),
-        pu, num(rec.montant) ?? round(qte * pu, 2), num(rec.poids_brut), num(rec.volume), num(rec.declaration_rang)]);
-    importees++;
-  }
-  await auditer(req, 'import', 'dossier_lignes', id, `${importees} lignes, ${appariees} appariées`);
-  res.json({ importees, appariees, non_appariees: importees - appariees, rejets });
+       SELECT $1, x.rang, x.article_code, x.code_barres, x.libelle, x.quantite, x.nb_cartons,
+              x.prix_unitaire_devise, x.montant_devise, x.poids_brut, x.volume, x.declaration_rang
+         FROM jsonb_to_recordset($2::jsonb) AS x(rang int, article_code text, code_barres text,
+              libelle text, quantite numeric, nb_cartons numeric, prix_unitaire_devise numeric,
+              montant_devise numeric, poids_brut numeric, volume numeric, declaration_rang int)`,
+      [id, JSON.stringify(avecRang)]);
+  });
+
+  const appariees = valides.filter(v => v.article_code).length;
+  await auditer(req, 'import', 'dossier_lignes', id, `${valides.length} lignes, ${appariees} appariées`);
+  res.json({ importees: valides.length, appariees, non_appariees: valides.length - appariees, rejets });
 });
 
 /* ---------------- Pièces du dossier (§7.3) ---------------- */
@@ -345,6 +373,134 @@ r.post('/:id/calculer', exiger('import'), async (req, res) => {
   } catch (e) {
     res.status(400).json({ erreur: e.message });
   }
+});
+
+/*
+ * Lot 2 — Révision après facture tardive (UC10, F-M5-08).
+ * À appeler après avoir ajouté le coût tardif : recalcule le dossier, compare aux coûts
+ * précédents, ventile l'ajustement entre stock restant (ajustement de stock) et quantités
+ * vendues (charge), et alerte sur les tarifs publiés passés sous le plancher de marge.
+ * Corps : { stocks: [{article_code, stock_restant}] } ; défaut : tout le stock restant.
+ */
+r.post('/:id/reviser', exiger('import'), async (req, res) => {
+  const id = req.params.id;
+  const stocksSaisis = new Map(((req.body || {}).stocks || []).map(s => [s.article_code, num(s.stock_restant)]));
+
+  const { rows: avant } = await query('SELECT * FROM resultats_couts WHERE dossier_id=$1', [id]);
+  if (!avant.length) return res.status(400).json({ erreur: 'Aucun calcul précédent : utilisez « Calculer » pour un premier calcul' });
+  const anciens = new Map(avant.map(x => [x.ligne_id, x]));
+
+  let resultat;
+  try { resultat = await calculerDossier(id); }
+  catch (e) { return res.status(400).json({ erreur: e.message }); }
+
+  const revisions = [];
+  await transaction(async q => {
+    for (const ligne of resultat.lignes) {
+      const ancien = anciens.get(ligne.ligne_id);
+      if (!ancien) continue;
+      const ancienUnitaire = Number(ancien.cout_unitaire);
+      const delta = round(ligne.cout_unitaire - ancienUnitaire, 4);
+      if (Math.abs(delta) < 0.005) continue;
+      const stockRestant = stocksSaisis.has(ligne.article_code)
+        ? Math.min(stocksSaisis.get(ligne.article_code) || 0, ligne.quantite)
+        : ligne.quantite;
+      const ajustementStock = round(delta * stockRestant, 0);
+      const ajustementCharge = round(delta * (ligne.quantite - stockRestant), 0);
+      await q(
+        `INSERT INTO revisions_cout (dossier_id, article_code, quantite, stock_restant,
+           cout_unitaire_avant, cout_unitaire_apres, ajustement_stock, ajustement_charge)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [id, ligne.article_code, ligne.quantite, stockRestant, ancienUnitaire, ligne.cout_unitaire,
+          ajustementStock, ajustementCharge]);
+      revisions.push({
+        article_code: ligne.article_code, quantite: ligne.quantite, stock_restant: stockRestant,
+        cout_unitaire_avant: ancienUnitaire, cout_unitaire_apres: ligne.cout_unitaire,
+        delta_unitaire: delta, ajustement_stock: ajustementStock, ajustement_charge: ajustementCharge
+      });
+    }
+    await q(`UPDATE dossiers SET statut='revise' WHERE id=$1`, [id]);
+  });
+
+  // Alerte sur les tarifs publiés dont la marge passe sous le plancher avec le nouveau coût
+  const alertesPrix = [];
+  for (const rev of revisions.filter(x => x.delta_unitaire > 0 && x.article_code)) {
+    const { rows: tarifs } = await query(
+      `SELECT t.*, a.taux_tva_vente FROM tarifs t JOIN articles a ON a.code_interne=t.article_code
+        WHERE t.article_code=$1 AND t.statut='publie'`, [rev.article_code]);
+    for (const t of tarifs) {
+      const ht = Number(t.prix_ttc) / (1 + Number(t.taux_tva_vente) / 100);
+      const nouvelleMarge = ht > 0 ? round((ht - rev.cout_unitaire_apres) / ht * 100, 2) : null;
+      if (nouvelleMarge !== null && nouvelleMarge < 5) {
+        alertesPrix.push({
+          article_code: rev.article_code, format_code: t.format_code, prix_ttc: Number(t.prix_ttc),
+          taux_marque_apres_revision: nouvelleMarge
+        });
+      }
+    }
+  }
+  if (alertesPrix.length) {
+    await notifier({
+      role: 'direction',
+      titre: `Révision du dossier ${id} : ${alertesPrix.length} tarif(s) sous le plancher de marge`,
+      corps: alertesPrix.map(a => `${a.article_code} (${a.format_code}) : taux de marque ${a.taux_marque_apres_revision} % au prix actuel de ${a.prix_ttc} F`).join('\n'),
+      lien: '#/tarification'
+    });
+  }
+  await auditer(req, 'revision_cout', 'dossier', id, `${revisions.length} référence(s) révisée(s), ${alertesPrix.length} alerte(s) prix`);
+  res.json({ revisions, alertes_prix: alertesPrix, totaux: resultat.totaux });
+});
+
+/* Lot 2 — Provisions proposées depuis les barèmes appris (F-M5-07) */
+r.get('/:id/provisions-proposees', async (req, res) => {
+  res.json(await proposerProvisions(req.params.id));
+});
+
+r.post('/:id/provisions-appliquer', exiger('import'), async (req, res) => {
+  const propositions = await proposerProvisions(req.params.id);
+  let creees = 0;
+  for (const p of propositions) {
+    await query(
+      `INSERT INTO dossier_couts (dossier_id, nature, libelle, montant, devise, taux_change, cle_repartition, capitalisable, provision)
+       VALUES ($1,$2,$3,$4,'XOF',1,$5,TRUE,TRUE)`,
+      [req.params.id, p.nature, `Provision ${p.nature} (barème sur ${p.nb_dossiers_appris} dossier(s))`,
+        p.montant_propose, p.cle_repartition]);
+    creees++;
+  }
+  await auditer(req, 'provisions_appliquees', 'dossier', req.params.id, `${creees} provision(s)`);
+  res.json({ ok: true, creees });
+});
+
+/* Lot 2 — Historique des révisions */
+r.get('/:id/revisions', async (req, res) => {
+  const { rows } = await query('SELECT * FROM revisions_cout WHERE dossier_id=$1 ORDER BY id DESC', [req.params.id]);
+  res.json(rows);
+});
+
+/* Lot 3 — Fichier numérisé d'une pièce (F-M4-02) : téléversement et téléchargement */
+r.put('/:id/pieces/:pieceId/fichier', exiger('import'), express.raw({ type: '*/*', limit: '8mb' }), async (req, res) => {
+  const { rows: piece } = await query(
+    'SELECT id FROM dossier_pieces WHERE id=$1 AND dossier_id=$2', [req.params.pieceId, req.params.id]);
+  if (!piece.length) return res.status(404).json({ erreur: 'Pièce introuvable' });
+  if (!req.body || !req.body.length) return res.status(400).json({ erreur: 'Fichier vide' });
+  const nom = decodeURIComponent(req.headers['x-nom-fichier'] || 'document');
+  const type = req.headers['content-type'] || 'application/octet-stream';
+  await query('DELETE FROM pieces_fichiers WHERE piece_id=$1', [req.params.pieceId]);
+  await query(
+    `INSERT INTO pieces_fichiers (piece_id, nom_fichier, type_mime, taille, contenu) VALUES ($1,$2,$3,$4,$5)`,
+    [req.params.pieceId, nom, type, req.body.length, req.body]);
+  await auditer(req, 'televersement', 'piece', req.params.pieceId, `${nom} (${req.body.length} octets)`);
+  res.json({ ok: true, nom, taille: req.body.length });
+});
+
+r.get('/:id/pieces/:pieceId/fichier', async (req, res) => {
+  const { rows } = await query(
+    `SELECT pf.* FROM pieces_fichiers pf JOIN dossier_pieces p ON p.id=pf.piece_id
+      WHERE pf.piece_id=$1 AND p.dossier_id=$2`, [req.params.pieceId, req.params.id]);
+  if (!rows.length) return res.status(404).json({ erreur: 'Aucun fichier pour cette pièce' });
+  res.setHeader('Content-Type', rows[0].type_mime);
+  res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(rows[0].nom_fichier)}"`);
+  res.send(rows[0].contenu);
 });
 
 /* Export des résultats de coût (F-M9-03) */

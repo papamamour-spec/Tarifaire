@@ -8,7 +8,7 @@
  *   le total restant égal aux totaux du connaissement (point de vigilance §5.3).
  * - Coût de mise en rayon : coût débarqué + logistique aval + démarque + portage (§8.4).
  */
-const { query } = require('../db');
+const { query, transaction } = require('../db');
 const { round } = require('../util');
 
 async function parametre(cle, defaut) {
@@ -199,8 +199,7 @@ async function calculerDossier(dossierId) {
     }
   }
 
-  // 3) Enregistrement des résultats par ligne
-  await query('DELETE FROM resultats_couts WHERE dossier_id=$1', [dossierId]);
+  // 3) Résultats par ligne, calculés en mémoire puis écrits d'un bloc
   const sortie = [];
   for (const r of res) {
     const coutTotal = round(r.composantes.reduce((s, c) => s + c.montant, 0), 2);
@@ -214,13 +213,6 @@ async function calculerDossier(dossierId) {
       poids: r.ligne.poids_calc, poids_estime: r.ligne.poids_est,
       volume: r.ligne.volume_calc, volume_estime: r.ligne.volume_est
     };
-    await query(
-      `INSERT INTO resultats_couts (dossier_id, ligne_id, article_code, quantite, prix_achat_total,
-         cout_total, cout_unitaire, coefficient, taux_effectif, unite_payante, indicateur_up, detail)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-      [dossierId, r.ligne.id, r.ligne.article_code, q, r.ligne.montant_ref,
-        coutTotal, unitaire, coefficient, tauxEffectif, r.ligne.unite_payante, r.ligne.indicateur_up,
-        JSON.stringify(detail)]);
     sortie.push({
       ligne_id: r.ligne.id, rang: r.ligne.rang, article_code: r.ligne.article_code,
       libelle: r.ligne.libelle || r.ligne.article_libelle, quantite: q,
@@ -230,17 +222,34 @@ async function calculerDossier(dossierId) {
       poids: r.ligne.poids_calc, poids_estime: r.ligne.poids_est,
       volume: r.ligne.volume_calc, volume_estime: r.ligne.volume_est,
       taxes_creance: r.taxes_creance,
-      composantes: r.composantes
+      composantes: r.composantes, detail
     });
   }
 
-  // 4) Alimentation automatique du référentiel (F-M1-04) : taux effectif constaté
-  for (const r of sortie) {
-    if (r.article_code && r.taux_effectif !== null) {
-      await query('UPDATE articles SET taux_effectif_constate=$1, modifie_le=now() WHERE code_interne=$2',
-        [r.taux_effectif, r.article_code]);
+  // Écriture atomique : suppression, insertion par lot, enrichissement du taux effectif (F-M1-04)
+  await transaction(async q => {
+    await q('DELETE FROM resultats_couts WHERE dossier_id=$1', [dossierId]);
+    await q(
+      `INSERT INTO resultats_couts (dossier_id, ligne_id, article_code, quantite, prix_achat_total,
+         cout_total, cout_unitaire, coefficient, taux_effectif, unite_payante, indicateur_up, detail)
+       SELECT $1, x.ligne_id, x.article_code, x.quantite, x.prix_achat_total, x.cout_total,
+              x.cout_unitaire, x.coefficient, x.taux_effectif, x.unite_payante, x.indicateur_up, x.detail
+         FROM jsonb_to_recordset($2::jsonb) AS x(ligne_id int, article_code text, quantite numeric,
+              prix_achat_total numeric, cout_total numeric, cout_unitaire numeric, coefficient numeric,
+              taux_effectif numeric, unite_payante numeric, indicateur_up text, detail jsonb)`,
+      [dossierId, JSON.stringify(sortie.map(s => ({
+        ligne_id: s.ligne_id, article_code: s.article_code, quantite: s.quantite,
+        prix_achat_total: s.prix_achat_total, cout_total: s.cout_total, cout_unitaire: s.cout_unitaire,
+        coefficient: s.coefficient, taux_effectif: s.taux_effectif, unite_payante: s.unite_payante,
+        indicateur_up: s.indicateur_up, detail: s.detail
+      })))]);
+    for (const s of sortie) {
+      if (s.article_code && s.taux_effectif !== null) {
+        await q('UPDATE articles SET taux_effectif_constate=$1, modifie_le=now() WHERE code_interne=$2',
+          [s.taux_effectif, s.article_code]);
+      }
     }
-  }
+  });
 
   const totaux = {
     valeur_achat: round(sortie.reduce((s, r) => s + r.prix_achat_total, 0), 0),
