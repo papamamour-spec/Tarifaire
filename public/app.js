@@ -507,9 +507,17 @@ async function afficherOngletFournisseurs(conteneur, recharger) {
         <td>${esc(f.devise)}</td><td>${esc(f.incoterm_defaut || '')}</td><td>${esc(f.contact || '')}</td>
         <td>${f.actif ? '<span class="badge vert">oui</span>' : '<span class="badge rouge">non</span>'}</td>
         <td class="num" id="fo-nb-${esc(f.code)}">…</td>
-        <td><button class="petit secondaire" onclick="editerFournisseur('${esc(f.code)}')">Modifier</button></td>
+        <td style="white-space:nowrap">
+          <button class="petit secondaire" onclick="editerFournisseur('${esc(f.code)}')">Modifier</button>
+          <button class="petit danger" onclick="supprFournisseur('${esc(f.code)}')">✕</button>
+        </td>
       </tr>`).join('') || '<tr><td colspan="9">Aucun fournisseur. Créez le premier avec le formulaire ci-dessus.</td></tr>'}
     </table></div>`;
+  window.supprFournisseur = async code => {
+    if (!confirm(`Supprimer le fournisseur ${code} ? (refusé s'il est référencé ; préférez la désactivation)`)) return;
+    try { await api('/referentiels/fournisseurs/' + encodeURIComponent(code), { method: 'DELETE' }); recharger(); }
+    catch (e) { message('fo-msg', 'erreur', e.message); }
+  };
   // Nombre d'articles rattachés (conditions d'achat) par fournisseur
   api('/referentiels/conditions-achat').then(conditions => {
     const compte = {};
@@ -560,13 +568,42 @@ async function afficherOngletFamilles(conteneur, recharger) {
       <div id="fa2-msg"></div>
     </div>
     <div class="table-defilante"><table>
-      <tr><th>Code</th><th>Libellé</th><th>Parente</th><th class="num">Marge cible</th><th class="num">Démarque</th></tr>
+      <tr><th>Code</th><th>Libellé</th><th>Parente</th><th class="num">Marge cible</th><th class="num">Démarque</th><th class="num">Articles</th><th></th></tr>
       ${familles.map(f => `<tr>
         <td><b>${esc(f.code)}</b></td><td>${esc(f.libelle)}</td><td>${esc(f.parent_code || '')}</td>
         <td class="num">${f.marge_cible !== null ? fmt(f.marge_cible, 1) + ' %' : '-'}</td>
         <td class="num">${f.demarque_taux !== null ? fmt(f.demarque_taux, 1) + ' %' : '-'}</td>
+        <td class="num" id="fa2-nb-${esc(f.code)}"></td>
+        <td style="white-space:nowrap">
+          <button class="petit secondaire" onclick="editerFamille('${esc(f.code)}')">Modifier</button>
+          <button class="petit danger" onclick="supprFamille('${esc(f.code)}')">✕</button>
+        </td>
       </tr>`).join('')}
-    </table></div>`;
+    </table></div>
+    <p class="petite-note">Le code d'une famille est immuable (il est référencé par les articles et les politiques). Pour renommer, modifiez le libellé ; les articles se reclassent en masse depuis l'onglet Articles.</p>`;
+  api('/referentiels/articles?taille=200&page=1').then(r => {
+    const compte = {};
+    for (const a of (r.articles || [])) compte[a.famille_code] = (compte[a.famille_code] || 0) + 1;
+    for (const f of familles) {
+      const cellule = document.getElementById('fa2-nb-' + f.code);
+      if (cellule) cellule.textContent = compte[f.code] || 0;
+    }
+  }).catch(() => {});
+  window.editerFamille = code => {
+    const f = familles.find(x => x.code === code);
+    if (!f) return;
+    document.getElementById('fa2-code').value = f.code;
+    document.getElementById('fa2-libelle').value = f.libelle;
+    document.getElementById('fa2-parent').value = f.parent_code || '';
+    document.getElementById('fa2-marge').value = f.marge_cible ?? '';
+    document.getElementById('fa2-demarque').value = f.demarque_taux ?? '';
+    document.getElementById('fa2-code').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
+  window.supprFamille = async code => {
+    if (!confirm(`Supprimer la famille ${code} ? (refusé si des articles y sont rattachés)`)) return;
+    try { await api('/referentiels/familles/' + encodeURIComponent(code), { method: 'DELETE' }); recharger(); }
+    catch (e) { message('fa2-msg', 'erreur', e.message); }
+  };
   document.getElementById('fa2-enregistrer').onclick = async () => {
     try {
       await api('/referentiels/familles', {
@@ -596,12 +633,27 @@ async function afficherOngletArticles(page) {
     if (val('a-recherche')) q.set('q', val('a-recherche'));
     if (coche('a-incomplets')) q.set('incomplets', '1');
     const articles = await api('/referentiels/articles?' + q.toString());
+    const familles = await api('/referentiels/familles');
     document.getElementById('a-liste').innerHTML = `
+      <div class="carte" id="a-lot" style="display:none">
+        <h3>Modifier la sélection (<span id="a-lot-nb">0</span> article(s))</h3>
+        <div class="ligne-champs">
+          <label class="champ">Famille<select id="lot-famille"><option value="">(inchangée)</option>${familles.map(f => `<option value="${esc(f.code)}">${esc(f.code)} · ${esc(f.libelle)}</option>`).join('')}</select></label>
+          <label class="champ">Statut<select id="lot-statut"><option value="">(inchangé)</option><option value="actif">Actif</option><option value="en_creation">En création</option><option value="en_arret">En arrêt</option><option value="arrete">Arrêté</option><option value="saisonnier">Saisonnier</option></select></label>
+          <label class="champ">TVA vente (%)<input id="lot-tva" type="number" step="0.1" placeholder="(inchangée)" style="width:100px"></label>
+          <label class="champ">Marge cible (%)<input id="lot-marge" type="number" step="0.1" placeholder="(inchangée)" style="width:100px"></label>
+          <label class="champ">Sensibilité prix<select id="lot-sensibilite"><option value="">(inchangée)</option><option value="elevee">Élevée</option><option value="moyenne">Moyenne</option><option value="faible">Faible</option></select></label>
+          <label class="champ">Origine (pays)<input id="lot-origine" maxlength="2" placeholder="(inchangée)" style="width:80px"></label>
+          <button id="lot-appliquer">Appliquer aux articles cochés</button>
+        </div>
+        <div id="lot-msg"></div>
+      </div>
       <div class="table-defilante"><table>
-        <tr><th>Code</th><th>Code barres</th><th>Libellé</th><th>Famille</th><th class="num">Colisage</th>
+        <tr><th><input type="checkbox" id="a-tout"></th><th>Code</th><th>Code barres</th><th>Libellé</th><th>Famille</th><th class="num">Colisage</th>
         <th class="num">Poids carton</th><th class="num">Volume</th><th class="num">Densité</th><th>UP</th>
         <th>Position</th><th class="num">Taux eff.</th><th>Complétude</th></tr>
-        ${articles.map(a => `<tr class="cliquable" onclick="naviguer('#/article/${encodeURIComponent(a.code_interne)}')">
+        ${articles.map(a => `<tr>
+          <td><input type="checkbox" class="a-coche" value="${esc(a.code_interne)}"></td>
           <td><a href="#/article/${encodeURIComponent(a.code_interne)}"><b>${esc(a.code_interne)}</b></a></td><td>${esc(a.code_barres || '')}</td><td><a href="#/article/${encodeURIComponent(a.code_interne)}">${esc(a.libelle)}</a></td>
           <td>${esc(a.famille_code || '')}</td><td class="num">${fmt(a.unites_par_carton)}</td>
           <td class="num">${a.poids_brut_carton ? fmt(a.poids_brut_carton, 2) + ' kg' : '-'}</td>
@@ -611,9 +663,38 @@ async function afficherOngletArticles(page) {
           <td>${esc(a.position_tarifaire || '')}</td>
           <td class="num">${a.taux_effectif_constate ? fmt(a.taux_effectif_constate, 1) + ' %' : '-'}</td>
           <td>${a.complet ? '<span class="badge vert">complète</span>' : `<span class="badge rouge" title="${esc(a.donnees_manquantes.join(', '))}">${a.donnees_manquantes.length} manquante(s)</span>`}</td>
-        </tr>`).join('') || '<tr><td colspan="12">Aucun article.</td></tr>'}
+        </tr>`).join('') || '<tr><td colspan="13">Aucun article.</td></tr>'}
       </table></div>
-      <p class="petite-note">${articles.length} article(s) affiché(s) · limite 500.</p>`;
+      <p class="petite-note">${articles.length} article(s) affiché(s) · limite 500. Cochez des articles pour les modifier en masse (famille, statut, TVA…).</p>`;
+
+    // Barre de modification en masse : apparaît dès qu'un article est coché
+    const majBarreLot = () => {
+      const coches = document.querySelectorAll('.a-coche:checked');
+      document.getElementById('a-lot').style.display = coches.length ? '' : 'none';
+      document.getElementById('a-lot-nb').textContent = coches.length;
+    };
+    document.getElementById('a-tout').onchange = e => {
+      document.querySelectorAll('.a-coche').forEach(c => c.checked = e.target.checked);
+      majBarreLot();
+    };
+    document.querySelectorAll('.a-coche').forEach(c => c.onchange = majBarreLot);
+    document.getElementById('lot-appliquer').onclick = async () => {
+      const codes = [...document.querySelectorAll('.a-coche:checked')].map(c => c.value);
+      if (!codes.length) return;
+      const champs = {
+        famille_code: val('lot-famille'), statut: val('lot-statut'), taux_tva_vente: val('lot-tva'),
+        marge_cible: val('lot-marge'), sensibilite_prix: val('lot-sensibilite'), origine: val('lot-origine').toUpperCase()
+      };
+      if (!Object.values(champs).some(v => v !== '')) {
+        message('lot-msg', 'erreur', 'Choisissez au moins un champ à modifier.');
+        return;
+      }
+      try {
+        const r = await api('/referentiels/articles-modifier-lot', { method: 'POST', body: { codes, champs } });
+        message('lot-msg', 'ok', `${r.modifies} article(s) modifié(s). Les changements sont tracés dans l'historique de chaque fiche.`);
+        setTimeout(charger, 1200);
+      } catch (e) { message('lot-msg', 'erreur', e.message); }
+    };
   }
   document.getElementById('a-chercher').onclick = charger;
   document.getElementById('a-recherche').addEventListener('keydown', e => { if (e.key === 'Enter') charger(); });
@@ -705,6 +786,7 @@ async function vueFicheArticle(page, args) {
     <div class="actions-page">
       <button id="fa-enregistrer">Enregistrer</button>
       <button class="secondaire" onclick="naviguer('#/articles')">Retour à la liste</button>
+      ${!nouveau ? '<button class="danger" id="fa-supprimer" title="Refusé si l\'article est utilisé dans un dossier, un tarif, un relevé ou une vente">Supprimer l\'article</button>' : ''}
     </div>
     ${!nouveau ? `
     <div class="carte" id="fa-zone-fournisseurs">
@@ -802,6 +884,17 @@ async function vueFicheArticle(page, args) {
   };
 
   if (nouveau) return;
+
+  document.getElementById('fa-supprimer').onclick = async () => {
+    if (!confirm(`Supprimer définitivement l'article ${code} ? Cette action est refusée s'il est utilisé quelque part.`)) return;
+    try {
+      await api('/referentiels/articles/' + encodeURIComponent(code), { method: 'DELETE' });
+      naviguer('#/articles');
+    } catch (e) {
+      message('fa-msg', 'erreur', e.message);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
 
   /* --------- Fournisseurs de l'article : comparaison, principal, rattachement --------- */
   async function chargerComparaison() {

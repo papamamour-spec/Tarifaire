@@ -26,18 +26,21 @@ const { chromium } = require('playwright-core');
   await page.fill('#c-mdp', 'admin123');
   await page.click('#btn-connexion');
   await page.waitForSelector('nav.lateral', { timeout: 8000 });
-  verif('connexion et affichage du tableau de bord', await page.locator('h1').first().textContent() !== null);
-  verif('guide de démarrage visible', await page.locator('details.guide').count() === 1);
+  verif('connexion réussie', await page.locator('h1').first().textContent() !== null);
+  // Le compte de démonstration est redirigé vers Mon compte (mot de passe à changer) : on va au tableau de bord
+  await page.click('a.item:has-text("Tableau de bord")');
+  await page.waitForSelector('details.guide', { timeout: 8000 });
+  verif('guide de démarrage visible sur le tableau de bord', await page.locator('details.guide').count() === 1);
 
   // 2. Navigation vers le référentiel et ouverture d'une fiche article par clic sur la ligne
   await page.click('a.item:has-text("Référentiel")');
   await page.waitForSelector('#a-liste table', { timeout: 8000 });
-  const lignesArticles = await page.locator('#a-liste tr.cliquable').count();
-  verif('liste des articles affichée (' + lignesArticles + ' lignes)', lignesArticles > 0);
-  await page.locator('#a-liste tr.cliquable').first().click();
+  const lignesArticles = await page.locator('#a-liste a[href^="#/article/"]').count();
+  verif('liste des articles affichée (' + lignesArticles + ' liens)', lignesArticles > 0);
+  await page.locator('#a-liste a[href^="#/article/"]').first().click();
   await page.waitForSelector('#fa-code', { timeout: 8000 });
   const codeArticle = await page.inputValue('#fa-code');
-  verif('FICHE ARTICLE ouverte par clic sur la ligne (' + codeArticle + ')', codeArticle.length > 0);
+  verif('FICHE ARTICLE ouverte par le lien de la ligne (' + codeArticle + ')', codeArticle.length > 0);
   verif('bloc fournisseurs de l\'article présent', await page.locator('#fa-zone-fournisseurs').count() === 1);
 
   // 3. Onglet fournisseurs : bouton Modifier (fiche fournisseur)
