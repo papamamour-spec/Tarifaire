@@ -1,5 +1,5 @@
 'use strict';
-/* Lot 4 : TOTP (RFC 6238) sans dépendance externe — HMAC-SHA1, pas de 30 s, fenêtre ±1. */
+/* Lot 4 : TOTP (RFC 6238) sans dépendance externe - HMAC-SHA1, pas de 30 s, fenêtre ±1. */
 const crypto = require('crypto');
 
 const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';

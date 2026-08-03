@@ -63,7 +63,7 @@ async function attendreBase() {
         continue;
       }
       if (tentative >= maxTentatives) throw e;
-      console.warn(`[base] injoignable (tentative ${tentative}/${maxTentatives}) : ${e.message} — nouvel essai dans 3 s`);
+      console.warn(`[base] injoignable (tentative ${tentative}/${maxTentatives}) : ${e.message} - nouvel essai dans 3 s`);
       await attendre(3000);
     }
   }

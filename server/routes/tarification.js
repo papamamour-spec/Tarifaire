@@ -10,7 +10,7 @@ const { notifier } = require('../services/notifications');
 
 const r = express.Router();
 
-/* Lot 2 — Règle de validation par seuils (F-M8-04) : une ligne de paramètres. */
+/* Lot 2 - Règle de validation par seuils (F-M8-04) : une ligne de paramètres. */
 async function chargerRegleValidation() {
   const { rows } = await query('SELECT * FROM regles_validation WHERE actif ORDER BY id DESC LIMIT 1');
   return rows[0] || null;
@@ -27,7 +27,7 @@ r.post('/regles-validation', exiger('direction'), async (req, res) => {
     `INSERT INTO regles_validation (taux_marque_min, ecart_prix_max_pct, actif) VALUES ($1,$2,TRUE)`,
     [num(taux_marque_min), num(ecart_prix_max_pct)]);
   await auditer(req, 'regle_validation', 'tarifs', null,
-    `marque min ${taux_marque_min ?? '—'} %, écart max ${ecart_prix_max_pct ?? '—'} %`);
+    `marque min ${taux_marque_min ?? '-'} %, écart max ${ecart_prix_max_pct ?? '-'} %`);
   res.json({ ok: true });
 });
 

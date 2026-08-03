@@ -6,9 +6,12 @@ function entetesSecurite(req, res, next) {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Permissions-Policy', 'geolocation=(self), camera=(self)');
+  // script-src doit autoriser les gestionnaires d'événements écrits dans le HTML
+  // (onclick="…") utilisés par l'application : 'self' seul les bloquerait et
+  // rendrait la plupart des boutons inopérants. Aucune ressource externe n'est admise.
   res.setHeader('Content-Security-Policy',
     "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; " +
-    "script-src 'self'; connect-src 'self'; manifest-src 'self'; frame-ancestors 'none'");
+    "script-src 'self' 'unsafe-inline'; connect-src 'self'; manifest-src 'self'; frame-ancestors 'none'");
   if (req.secure || req.headers['x-forwarded-proto'] === 'https') {
     res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   }

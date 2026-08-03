@@ -1,5 +1,5 @@
 'use strict';
-/* Lot 4 : espace personnel — mot de passe, double authentification TOTP, notifications. */
+/* Lot 4 : espace personnel - mot de passe, double authentification TOTP, notifications. */
 const express = require('express');
 const { query } = require('../db');
 const { changerMotDePasse, auditer } = require('../auth');

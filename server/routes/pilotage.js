@@ -1,5 +1,5 @@
 'use strict';
-/* Module M9 : pilotage et restitution — tableau de bord, indicateurs, marge réalisée. */
+/* Module M9 : pilotage et restitution - tableau de bord, indicateurs, marge réalisée. */
 const express = require('express');
 const { query, transaction } = require('../db');
 const { exiger, auditer } = require('../auth');
@@ -8,7 +8,7 @@ const { parseCsv, num } = require('../util');
 const r = express.Router();
 
 /*
- * Lot 2 — Import des ventes remontées de l'ERP (flux FE07 du CDC).
+ * Lot 2 - Import des ventes remontées de l'ERP (flux FE07 du CDC).
  * Colonnes : code_barres (ou code_interne);point_de_vente;date_vente;quantite;ca_ttc
  */
 r.post('/ventes-import/csv', exiger('comptable'), async (req, res) => {
@@ -54,7 +54,7 @@ r.post('/ventes-import/csv', exiger('comptable'), async (req, res) => {
 });
 
 /*
- * Lot 2 — Marge réalisée vs marge théorique (UC09, F-M9-05).
+ * Lot 2 - Marge réalisée vs marge théorique (UC09, F-M9-05).
  * Réalisée : CA HT constaté moins CUMP x quantités vendues.
  * Théorique : celle du tarif publié appliqué aux mêmes quantités.
  */
