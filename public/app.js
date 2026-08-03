@@ -1109,7 +1109,10 @@ async function vueDouane(page) {
         try {
           const r = await api('/douane/simulation', { method: 'POST', body: { valeur_en_douane: val('s-vd'), position_tarifaire: val('s-pos'), origine: val('s-ori'), date: val('s-date') || null } });
           document.getElementById('s-resultat').innerHTML = `
-            ${r.position ? `<p>Position <b>${esc(r.position.code)}</b> · ${esc(r.position.libelle)} (droit de douane ${fmt(r.position.taux_dd, 1)} %)</p>` : '<p class="message info">Position inconnue du référentiel : droit de douane à 0 %, seules les taxes à taux fixe sont calculées.</p>'}
+            ${r.position ? (r.position.niveau === 'approche'
+              ? `<div class="message info">Position ${esc(r.position.code_demande)} absente du référentiel : taux repris du niveau supérieur <b>${esc(r.position.code)}</b> · ${esc(r.position.libelle)} (droit de douane ${fmt(r.position.taux_dd, 1)} %). Saisissez la position exacte ou importez le tarif officiel pour affiner.</div>`
+              : `<p>Position <b>${esc(r.position.code)}</b> · ${esc(r.position.libelle)} (droit de douane ${fmt(r.position.taux_dd, 1)} %)</p>`)
+              : '<p class="message info">Position inconnue du référentiel : droit de douane à 0 %, seules les taxes à taux fixe sont calculées.</p>'}
             <div class="table-defilante"><table>
               <tr><th>Taxe</th><th class="num">Base</th><th class="num">Taux</th><th class="num">Montant</th><th>Traitement</th></tr>
               ${r.lignes.map(l => `<tr><td>${esc(l.code)} · ${esc(l.libelle)}</td><td class="num">${fcfa(l.base)}</td><td class="num">${fmt(l.taux, 2)} %</td><td class="num">${fcfa(l.montant)}</td>
@@ -1124,6 +1127,8 @@ async function vueDouane(page) {
     } else if (o === 'positions') {
       const positions = await api('/douane/positions');
       c.innerHTML = `
+        <div class="message info">Base préchargée : les 97 chapitres du système harmonisé avec le taux dominant du TEC CEDEAO/UEMOA et environ 200 positions détaillées pour la grande distribution. Une position absente est automatiquement rattachée au niveau supérieur (sous-position puis chapitre). Taux indicatifs : le tarif officiel des Douanes prime, importez-le ci-dessous (code;libelle;categorie;taux_dd) ou saisissez la position exacte, qui l'emportera toujours sur le niveau approché.</div>`;
+      c.innerHTML += `
         <div class="carte">
           <h3>Ajouter / modifier une position</h3>
           <div class="ligne-champs">

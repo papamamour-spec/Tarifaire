@@ -612,6 +612,27 @@ async function seed() {
     VALUES ('système','initialisation','base','Amorçage initial des référentiels')`);
 }
 
+/*
+ * Nomenclature TEC CEDEAO/UEMOA (Sénégal) : 97 chapitres avec taux dominant
+ * et positions détaillées pour la grande distribution. Idempotent : n'écrase
+ * jamais une position déjà présente (saisie manuelle ou import officiel).
+ */
+async function seedNomenclature() {
+  const { CHAPITRES, POSITIONS, categorie } = require('./data/tec_cedeao');
+  const lignes = [
+    ...CHAPITRES.map(([code, libelle, taux]) => ({ code, libelle: `Chapitre ${code} : ${libelle}`, taux })),
+    ...POSITIONS.map(([code, libelle, taux]) => ({ code, libelle, taux }))
+  ];
+  await transaction(async q => {
+    for (const l of lignes) {
+      await q(
+        `INSERT INTO positions_tarifaires (code, libelle, categorie, taux_dd)
+         VALUES ($1,$2,$3,$4) ON CONFLICT (code, date_effet) DO NOTHING`,
+        [l.code, l.libelle, categorie(l.taux), l.taux]);
+    }
+  });
+}
+
 async function init() {
   if (!process.env.DATABASE_URL) {
     console.warn('[base] DATABASE_URL non définie : tentative sur postgres://localhost:5432/tarifaire. ' +
@@ -621,6 +642,7 @@ async function init() {
   await migrate();
   await extensionsRecherche();
   await seed();
+  await seedNomenclature();
 }
 
 module.exports = { query, init, transaction };

@@ -14,7 +14,7 @@ r.get('/positions', async (req, res) => {
   const params = [];
   let sql = `SELECT DISTINCT ON (code) * FROM positions_tarifaires`;
   if (q) { params.push('%' + q.toLowerCase() + '%'); sql += ` WHERE code LIKE $1 OR lower(libelle) LIKE $1`; }
-  sql += ' ORDER BY code, date_effet DESC LIMIT 300';
+  sql += ' ORDER BY code, date_effet DESC LIMIT 500';
   const { rows } = await query(sql, params);
   res.json(rows);
 });
@@ -22,7 +22,11 @@ r.get('/positions', async (req, res) => {
 r.post('/positions', exiger('import'), async (req, res) => {
   const { code, libelle, categorie, taux_dd, date_effet } = req.body;
   const c = String(code || '').replace(/\D/g, '');
-  if (c.length !== 10) return res.status(400).json({ erreur: 'La position tarifaire doit comporter dix chiffres' });
+  // 10 chiffres = position complète ; 2, 4, 6 ou 8 chiffres = niveau de repli
+  // (chapitre, position, sous-position) utilisé par la résolution hiérarchique.
+  if (![2, 4, 6, 8, 10].includes(c.length)) {
+    return res.status(400).json({ erreur: 'Code à 2, 4, 6, 8 ou 10 chiffres attendu (10 = position complète, moins = niveau de repli)' });
+  }
   if (!libelle) return res.status(400).json({ erreur: 'Libellé requis' });
   await query(
     `INSERT INTO positions_tarifaires (code, date_effet, libelle, categorie, taux_dd)
