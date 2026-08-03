@@ -54,6 +54,12 @@ r.get('/journal', exiger('comptable'), async (req, res) => {
   res.json(rows);
 });
 
+/* Lot 1 — Vérification d'intégrité du journal chaîné (F-M11-05) */
+r.get('/journal-verification', exiger('comptable'), async (req, res) => {
+  const { verifierJournal } = require('../auth');
+  res.json(await verifierJournal());
+});
+
 /* Table des cours de change (M2 — table des cours, FE09) */
 r.get('/taux-change', async (req, res) => {
   const { rows } = await query(

@@ -56,7 +56,8 @@ function deconnexion() {
 const routes = {
   '': vueTableau, 'tableau': vueTableau, 'articles': vueArticles, 'article': vueFicheArticle,
   'douane': vueDouane, 'dossiers': vueDossiers, 'dossier': vueDossierDetail,
-  'tarification': vueTarification, 'veille': vueVeille, 'admin': vueAdmin
+  'tarification': vueTarification, 'veille': vueVeille, 'marges': vueMarges,
+  'admin': vueAdmin, 'compte': vueCompte
 };
 
 window.addEventListener('hashchange', rendre);
@@ -75,12 +76,14 @@ function rendre() {
     ['dossiers', "Dossiers d'importation"],
     ['tarification', 'Tarification'],
     ['veille', 'Veille concurrentielle'],
-    ['admin', 'Administration']
+    ['marges', 'Marge réalisée'],
+    ['admin', 'Administration'],
+    ['compte', 'Mon compte']
   ];
   app.innerHTML = `
     <nav class="lateral">
       <div class="logo">TARIFAIRE<small>Prix de revient &amp; politique tarifaire — UEMOA</small></div>
-      ${menu.map(([r, l]) => `<a class="item ${route === r || (route === '' && r === 'tableau') || (route === 'article' && r === 'articles') || (route === 'dossier' && r === 'dossiers') ? 'actif' : ''}" href="#/${r}">${l}</a>`).join('')}
+      ${menu.map(([r, l]) => `<a class="item ${route === r || (route === '' && r === 'tableau') || (route === 'article' && r === 'articles') || (route === 'dossier' && r === 'dossiers') ? 'actif' : ''}" href="#/${r}">${l}${r === 'compte' ? ' <span id="badge-notifs"></span>' : ''}</a>`).join('')}
       <div class="pied">
         <div>${esc(etat.utilisateur?.nom || '')}<br><span class="badge gris">${esc(etat.utilisateur?.role || '')}</span></div>
         <button class="secondaire petit" onclick="deconnexion()">Se déconnecter</button>
@@ -90,6 +93,16 @@ function rendre() {
   vue(document.getElementById('page'), args).catch(e => {
     document.getElementById('page').innerHTML = `<div class="message erreur">${esc(e.message)}</div>`;
   });
+  majBadgeNotifications();
+}
+
+async function majBadgeNotifications() {
+  try {
+    const notifs = await api('/compte/notifications');
+    const nonLues = notifs.filter(n => !n.lue).length;
+    const badge = document.getElementById('badge-notifs');
+    if (badge) badge.innerHTML = nonLues ? `<span class="badge rouge">${nonLues}</span>` : '';
+  } catch { /* silencieux */ }
 }
 
 /* ---------------------------------- Connexion ---------------------------------- */
@@ -102,18 +115,31 @@ function vueConnexion(app) {
         <div id="msg-connexion"></div>
         <label class="champ">Courriel<input id="c-email" type="email" autocomplete="username" value=""></label>
         <label class="champ">Mot de passe<input id="c-mdp" type="password" autocomplete="current-password"></label>
+        <label class="champ" id="c-2fa-champ" style="display:none">Code de double authentification<input id="c-2fa" inputmode="numeric" maxlength="6" placeholder="6 chiffres"></label>
         <button id="btn-connexion">Se connecter</button>
         <p class="petite-note">Compte de démonstration initial : admin@demo.sn / admin123</p>
       </div>
     </div>`;
   const soumettre = async () => {
     try {
-      const r = await api('/connexion', { method: 'POST', body: { email: val('c-email'), mot_de_passe: val('c-mdp') } });
+      const r = await api('/connexion', {
+        method: 'POST',
+        body: { email: val('c-email'), mot_de_passe: val('c-mdp'), code_2fa: val('c-2fa') || undefined }
+      });
       etat.token = r.token; etat.utilisateur = r.utilisateur;
       localStorage.setItem('tarifaire_token', r.token);
       localStorage.setItem('tarifaire_utilisateur', JSON.stringify(r.utilisateur));
       rendre();
-    } catch (e) { message('msg-connexion', 'erreur', e.message); }
+      if (r.utilisateur.doit_changer_mdp) {
+        naviguer('#/compte');
+      }
+    } catch (e) {
+      if (e.data && e.data.exige_2fa) {
+        document.getElementById('c-2fa-champ').style.display = '';
+        document.getElementById('c-2fa').focus();
+        message('msg-connexion', 'info', 'Saisissez le code de votre application d’authentification.');
+      } else message('msg-connexion', 'erreur', e.message);
+    }
   };
   document.getElementById('btn-connexion').onclick = soumettre;
   app.querySelectorAll('input').forEach(i => i.addEventListener('keydown', e => { if (e.key === 'Enter') soumettre(); }));
@@ -615,6 +641,10 @@ async function vueDossierDetail(page, args) {
       const cles = [['valeur', 'Valeur'], ['poids', 'Poids'], ['volume', 'Volume'], ['unite_payante', 'Unité payante'], ['colis', 'Colis'], ['quantite', 'Quantité']];
       c.innerHTML = `
         <div class="message info">Chaque nature de coût porte sa propre clé de répartition, reflétant sa cause réelle (CDC §1.3). Le fret maritime doit être réparti à l'<b>unité payante</b>.</div>
+        <div class="actions-page">
+          <button class="secondaire" id="co-provisions">Proposer des provisions (barèmes appris des dossiers clôturés)</button>
+        </div>
+        <div id="co-prov-zone"></div>
         <div class="table-defilante"><table>
           <tr><th>Nature</th><th>Libellé</th><th class="num">Montant</th><th>Devise</th><th class="num">Taux</th><th>Clé de répartition</th><th>Capitalisable</th><th>Provision</th><th></th></tr>
           ${d.couts.map(x => `<tr><td>${esc(x.nature)}</td><td>${esc(x.libelle || '')}</td><td class="num">${fmt(x.montant, 2)}</td>
@@ -645,6 +675,29 @@ async function vueDossierDetail(page, args) {
           <p class="petite-note">Clés recommandées : fret → unité payante ; assurance, transitaire → valeur ; logistique amont → colis ; surestaries → non capitalisable.</p>
         </div>`;
       window.supprCout = async cid => { await api(`/dossiers/${id}/couts/${cid}`, { method: 'DELETE' }); rendre(); };
+      document.getElementById('co-provisions').onclick = async () => {
+        const propositions = await api(`/dossiers/${id}/provisions-proposees`);
+        const zone = document.getElementById('co-prov-zone');
+        if (!propositions.length) {
+          zone.innerHTML = '<div class="message info">Aucune provision à proposer : soit toutes les natures habituelles sont déjà saisies, soit aucun dossier clôturé n\'a encore alimenté les barèmes.</div>';
+          return;
+        }
+        zone.innerHTML = `
+          <div class="carte"><h3>Provisions proposées</h3>
+          <div class="table-defilante"><table>
+            <tr><th>Nature</th><th>Barème</th><th class="num">Assiette</th><th class="num">Montant proposé</th><th>Appris sur</th></tr>
+            ${propositions.map(p => `<tr><td>${esc(p.nature)}</td>
+              <td>${fmt(p.valeur_bareme, 3)} ${p.mode === 'pct_valeur' ? '% de la valeur' : 'F par ' + esc(p.cle_repartition)}</td>
+              <td class="num">${fmt(p.assiette, 2)}</td><td class="num"><b>${fcfa(p.montant_propose)}</b></td>
+              <td class="petite-note">${p.nb_dossiers_appris} dossier(s), dernier : ${esc(p.dernier_dossier || '')}</td></tr>`).join('')}
+          </table></div>
+          <div class="actions-page"><button id="co-prov-appliquer">Appliquer ces provisions</button></div></div>`;
+        document.getElementById('co-prov-appliquer').onclick = async () => {
+          const r = await api(`/dossiers/${id}/provisions-appliquer`, { method: 'POST' });
+          alert(`${r.creees} provision(s) ajoutée(s) au dossier. Elles seront extournées à la saisie des factures réelles.`);
+          rendre();
+        };
+      };
       document.getElementById('co-ajouter').onclick = async () => {
         try {
           const nature = val('co-nature');
@@ -734,7 +787,10 @@ async function vueDossierDetail(page, args) {
           <tr><th>Type de pièce</th><th>Référence</th><th>Date</th><th class="num">Montant</th><th>Devise</th><th>Commentaire</th><th></th></tr>
           ${d.pieces.map(p => `<tr><td>${esc(p.type_piece)}</td><td>${esc(p.reference || '')}</td><td>${dateFr(p.date_piece)}</td>
             <td class="num">${fmt(p.montant, 2)}</td><td>${esc(p.devise || '')}</td><td>${esc(p.commentaire || '')}</td>
-            <td><button class="petit danger" onclick="supprPiece(${p.id})">✕</button></td></tr>`).join('') || '<tr><td colspan="7">Aucune pièce rattachée.</td></tr>'}
+            <td style="white-space:nowrap">
+              ${p.a_fichier ? `<button class="petit secondaire" onclick="telechargerPiece(${p.id})">📄 Télécharger</button>` : `<button class="petit secondaire" onclick="televerserPiece(${p.id})">⬆ Document</button>`}
+              <button class="petit danger" onclick="supprPiece(${p.id})">✕</button>
+            </td></tr>`).join('') || '<tr><td colspan="7">Aucune pièce rattachée.</td></tr>'}
         </table></div>
         <div class="carte"><h3>Rattacher une pièce</h3>
           <div class="ligne-champs">
@@ -748,6 +804,30 @@ async function vueDossierDetail(page, args) {
           </div>
         </div>`;
       window.supprPiece = async pid => { await api(`/dossiers/${id}/pieces/${pid}`, { method: 'DELETE' }); rendre(); };
+      // Téléversement du document numérisé de la pièce (F-M4-02)
+      window.televerserPiece = pid => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.pdf,.jpg,.jpeg,.png,.webp';
+        input.onchange = async () => {
+          const fichier = input.files[0];
+          if (!fichier) return;
+          if (fichier.size > 8 * 1024 * 1024) { alert('Fichier trop volumineux (8 Mo maximum).'); return; }
+          const rep = await fetch(`/api/dossiers/${id}/pieces/${pid}/fichier`, {
+            method: 'PUT',
+            headers: {
+              Authorization: 'Bearer ' + etat.token,
+              'Content-Type': fichier.type || 'application/octet-stream',
+              'X-Nom-Fichier': encodeURIComponent(fichier.name)
+            },
+            body: fichier
+          });
+          if (rep.ok) rendre();
+          else alert('Échec du téléversement : ' + ((await rep.json().catch(() => ({}))).erreur || rep.status));
+        };
+        input.click();
+      };
+      window.telechargerPiece = pid => telecharger(`/dossiers/${id}/pieces/${pid}/fichier`, 'document');
       document.getElementById('pi-ajouter').onclick = async () => {
         await api(`/dossiers/${id}/pieces`, { method: 'POST', body: { type_piece: val('pi-type'), reference: val('pi-ref'), date_piece: val('pi-date') || null, montant: val('pi-montant'), devise: val('pi-devise'), commentaire: val('pi-com') } });
         rendre();
@@ -756,11 +836,34 @@ async function vueDossierDetail(page, args) {
       c.innerHTML = `
         <div class="actions-page">
           <button id="r-calculer">Calculer le coût de revient débarqué</button>
+          <button class="secondaire" id="r-reviser" title="Après ajout d'une facture tardive : recalcule et ventile l'ajustement entre stock restant et quantités vendues">Réviser (facture tardive)</button>
           <button class="secondaire" id="r-export">Exporter les coûts (CSV)</button>
           <button class="secondaire" id="r-ecritures">Écritures comptables (CSV)</button>
         </div>
         <div id="r-msg"></div>
         <div id="r-tableau">${tableauResultats(d.resultats)}</div>`;
+      document.getElementById('r-reviser').onclick = async () => {
+        if (!d.resultats.length) { message('r-msg', 'erreur', 'Aucun calcul précédent : utilisez « Calculer » d\'abord.'); return; }
+        try {
+          const r = await api(`/dossiers/${id}/reviser`, { method: 'POST', body: {} });
+          if (!r.revisions.length) {
+            message('r-msg', 'info', 'Aucun écart de coût : rien à réviser.');
+          } else {
+            document.getElementById('r-msg').innerHTML = `
+              <div class="message ok">${r.revisions.length} référence(s) révisée(s).</div>
+              <div class="table-defilante"><table>
+                <tr><th>Article</th><th class="num">Coût avant</th><th class="num">Coût après</th><th class="num">Écart unitaire</th><th class="num">Ajust. stock</th><th class="num">Ajust. charge</th></tr>
+                ${r.revisions.map(x => `<tr><td>${esc(x.article_code || '—')}</td>
+                  <td class="num">${fmt(x.cout_unitaire_avant, 2)}</td><td class="num">${fmt(x.cout_unitaire_apres, 2)}</td>
+                  <td class="num"><span class="badge ${x.delta_unitaire > 0 ? 'rouge' : 'vert'}">${x.delta_unitaire > 0 ? '+' : ''}${fmt(x.delta_unitaire, 2)}</span></td>
+                  <td class="num">${fcfa(x.ajustement_stock)}</td><td class="num">${fcfa(x.ajustement_charge)}</td></tr>`).join('')}
+              </table></div>
+              ${r.alertes_prix.length ? `<div class="message erreur"><b>${r.alertes_prix.length} tarif(s) publié(s) passent sous le plancher de marge</b> — la direction a été notifiée :<br>${r.alertes_prix.map(a => `${esc(a.article_code)} (${esc(a.format_code)}) : taux de marque ${fmt(a.taux_marque_apres_revision, 1)} %`).join('<br>')}</div>` : ''}`;
+            const dd = await api('/dossiers/' + id);
+            document.getElementById('r-tableau').innerHTML = tableauResultats(dd.resultats);
+          }
+        } catch (e) { message('r-msg', 'erreur', e.message); }
+      };
       document.getElementById('r-calculer').onclick = async () => {
         try {
           const r = await api(`/dossiers/${id}/calculer`, { method: 'POST' });
@@ -810,6 +913,8 @@ async function vueTarification(page) {
     <div class="onglets">
       <button data-o="proposer" class="actif">Proposer des prix</button>
       <button data-o="tarifs">Tarifs &amp; validation</button>
+      <button data-o="promotions">Promotions</button>
+      <button data-o="controles">Contrôles de cohérence</button>
       <button data-o="politiques">Politiques</button>
       <button data-o="formats">Formats de magasin</button>
     </div>
@@ -944,11 +1049,21 @@ async function vueTarification(page) {
         } catch (e) { message('pr-msg', 'erreur', e.message); }
       };
     } else if (o === 'tarifs') {
-      const tarifs = await api('/tarification/tarifs');
-      const badge = s => ({ propose: 'bleu', valide: 'orange', publie: 'vert', refuse: 'rouge', annule: 'gris', remplace: 'gris' }[s] || 'gris');
+      const [tarifs, regle] = await Promise.all([api('/tarification/tarifs'), api('/tarification/regles-validation')]);
+      const badge = s => ({ propose: 'bleu', a_valider: 'rouge', valide: 'orange', publie: 'vert', refuse: 'rouge', annule: 'gris', remplace: 'gris' }[s] || 'gris');
+      const estDirection = etat.utilisateur.role === 'admin' || etat.utilisateur.role === 'direction';
       c.innerHTML = `
+        <div class="carte">
+          <h3>Règle de validation par seuils <span class="petite-note">— au-delà, la proposition passe en « a_valider » et exige la direction</span></h3>
+          <div class="ligne-champs">
+            <label class="champ">Taux de marque minimal (%)<input id="rg-marque" type="number" step="0.1" value="${regle && regle.taux_marque_min !== null ? esc(regle.taux_marque_min) : ''}"></label>
+            <label class="champ">Écart max avec le tarif publié (%)<input id="rg-ecart" type="number" step="0.1" value="${regle && regle.ecart_prix_max_pct !== null ? esc(regle.ecart_prix_max_pct) : ''}"></label>
+            <button id="rg-enregistrer" ${estDirection ? '' : 'disabled title="Rôle direction requis"'}>Enregistrer la règle</button>
+          </div>
+          <div id="rg-msg"></div>
+        </div>
         <div class="actions-page">
-          <button id="ta-publier" ${etat.utilisateur.role === 'admin' || etat.utilisateur.role === 'direction' ? '' : 'disabled title="Rôle direction requis"'}>Publier la sélection</button>
+          <button id="ta-publier" ${estDirection ? '' : 'disabled title="Rôle direction requis"'}>Publier la sélection</button>
           <button class="secondaire" id="ta-export">Exporter les tarifs publiés (CSV → ERP/caisse)</button>
         </div>
         <div id="ta-msg"></div>
@@ -961,12 +1076,23 @@ async function vueTarification(page) {
             <td>${esc(t.format_code)}</td><td class="num"><b>${fcfa(t.prix_ttc)}</b></td><td class="num">${fmt(t.prix_ht, 1)}</td>
             <td class="num">${t.taux_marque !== null ? fmt(t.taux_marque, 1) + ' %' : '—'}</td>
             <td>${t.contrainte ? `<span class="badge gris">${esc(t.contrainte)}</span>` : ''}</td>
-            <td><span class="badge ${badge(t.statut)}">${esc(t.statut)}</span></td>
+            <td><span class="badge ${badge(t.statut)}">${esc(t.statut)}</span>
+              ${t.statut === 'a_valider' && estDirection ? `<button class="petit" onclick="validerTarif(${t.id})">Valider</button>` : ''}</td>
             <td>${dateFr(t.date_effet)}</td>
             <td>${t.alerte ? `<span class="badge rouge" title="${esc(t.alerte)}">⚠</span>` : ''}</td>
             <td class="petite-note">${esc(t.auteur || '')}</td>
           </tr>`).join('') || '<tr><td colspan="11">Aucun tarif.</td></tr>'}
         </table></div>`;
+      window.validerTarif = async tid => {
+        await api(`/tarification/tarifs/${tid}/statut`, { method: 'POST', body: { statut: 'valide' } });
+        afficher('tarifs');
+      };
+      document.getElementById('rg-enregistrer').onclick = async () => {
+        try {
+          await api('/tarification/regles-validation', { method: 'POST', body: { taux_marque_min: val('rg-marque'), ecart_prix_max_pct: val('rg-ecart') } });
+          message('rg-msg', 'ok', 'Règle enregistrée : elle s\'applique aux prochaines propositions.');
+        } catch (e) { message('rg-msg', 'erreur', e.message); }
+      };
       document.getElementById('ta-export').onclick = () => telecharger('/tarification/tarifs-export/csv', 'tarifs_publies.csv');
       document.getElementById('ta-publier').onclick = async () => {
         const ids = [...document.querySelectorAll('.ta-coche:checked')].map(x => Number(x.value));
@@ -977,6 +1103,85 @@ async function vueTarification(page) {
           setTimeout(() => afficher('tarifs'), 1200);
         } catch (e) { message('ta-msg', 'erreur', e.message); }
       };
+    } else if (o === 'promotions') {
+      const [promos, familles, formats] = await Promise.all([
+        api('/tarification/promotions'), api('/referentiels/familles'), api('/tarification/formats')]);
+      const badgeP = s => ({ prevue: 'bleu', active: 'vert', terminee: 'gris', annulee: 'rouge' }[s] || 'gris');
+      c.innerHTML = `
+        <div class="table-defilante"><table>
+          <tr><th>Libellé</th><th>Cible</th><th>Format</th><th class="num">Remise</th><th>Période</th><th class="num">Marge min</th><th>Statut</th><th></th></tr>
+          ${promos.map(p => `<tr>
+            <td><b>${esc(p.libelle)}</b></td>
+            <td>${p.article_code ? esc(p.article_code) + (p.article_libelle ? ' — ' + esc(p.article_libelle) : '') : 'famille ' + esc(p.famille_code || '')}</td>
+            <td>${esc(p.format_code || 'tous')}</td>
+            <td class="num">${fmt(p.taux_remise, 1)} %</td>
+            <td>${dateFr(p.date_debut)} → ${dateFr(p.date_fin)}</td>
+            <td class="num">${fmt(p.marge_min, 1)} %</td>
+            <td><span class="badge ${badgeP(p.statut)}">${esc(p.statut)}</span></td>
+            <td style="white-space:nowrap">
+              <button class="petit secondaire" onclick="simulerPromo(${p.id})">Simuler la marge</button>
+              ${p.statut === 'prevue' ? `<button class="petit" onclick="statutPromo(${p.id},'active')">Activer</button>` : ''}
+              ${p.statut === 'active' ? `<button class="petit secondaire" onclick="statutPromo(${p.id},'terminee')">Terminer</button>` : ''}
+            </td></tr>`).join('') || '<tr><td colspan="8">Aucune promotion.</td></tr>'}
+        </table></div>
+        <div id="pm-simulation"></div>
+        <div class="carte"><h3>Nouvelle campagne promotionnelle</h3>
+          <div class="ligne-champs">
+            <label class="champ">Libellé<input id="pm-libelle" style="min-width:200px"></label>
+            <label class="champ">Article (ou vide)<input id="pm-article"></label>
+            <label class="champ">Famille (ou vide)<select id="pm-famille"><option value="">—</option>${familles.map(f => `<option value="${esc(f.code)}">${esc(f.code)}</option>`).join('')}</select></label>
+            <label class="champ">Format<select id="pm-format"><option value="">tous</option>${formats.map(f => `<option value="${esc(f.code)}">${esc(f.code)}</option>`).join('')}</select></label>
+            <label class="champ">Remise (%)<input id="pm-remise" type="number" step="0.1"></label>
+            <label class="champ">Du<input id="pm-debut" type="date"></label>
+            <label class="champ">Au<input id="pm-fin" type="date"></label>
+            <label class="champ">Marge min acceptée (%)<input id="pm-marge" type="number" step="0.1" value="0"></label>
+            <button id="pm-creer">Créer</button>
+          </div><div id="pm-msg"></div>
+        </div>`;
+      window.statutPromo = async (pid, s) => { await api(`/tarification/promotions/${pid}/statut`, { method: 'POST', body: { statut: s } }); afficher('promotions'); };
+      window.simulerPromo = async pid => {
+        const r = await api(`/tarification/promotions/${pid}/simulation`);
+        document.getElementById('pm-simulation').innerHTML = `
+          <div class="carte"><h3>Marge pendant « ${esc(r.promotion.libelle)} » (${fmt(r.promotion.taux_remise, 1)} % de remise)</h3>
+          ${r.marges_negatives ? `<div class="message erreur">${r.marges_negatives} référence(s) en marge NÉGATIVE pendant la promotion.</div>` : ''}
+          ${r.alertes && !r.marges_negatives ? `<div class="message erreur">${r.alertes} référence(s) sous la marge minimale acceptée.</div>` : ''}
+          <div class="table-defilante"><table>
+            <tr><th>Article</th><th>Format</th><th class="num">Prix normal</th><th class="num">Prix promo</th><th class="num">Taux de marque promo</th></tr>
+            ${r.lignes.map(l => `<tr><td>${esc(l.article_code)}<br><span class="petite-note">${esc(l.libelle)}</span></td>
+              <td>${esc(l.format_code)}</td><td class="num">${fcfa(l.prix_normal)}</td><td class="num"><b>${fcfa(l.prix_promo)}</b></td>
+              <td class="num">${l.taux_marque_promo !== null ? `<span class="badge ${l.marge_negative ? 'rouge' : l.sous_marge_min ? 'orange' : 'vert'}">${fmt(l.taux_marque_promo, 1)} %</span>` : '—'}</td></tr>`).join('') || '<tr><td colspan="5">Aucun tarif publié dans le périmètre de la promotion.</td></tr>'}
+          </table></div></div>`;
+      };
+      document.getElementById('pm-creer').onclick = async () => {
+        try {
+          await api('/tarification/promotions', {
+            method: 'POST',
+            body: { libelle: val('pm-libelle'), article_code: val('pm-article'), famille_code: val('pm-famille'), format_code: val('pm-format'), taux_remise: val('pm-remise'), date_debut: val('pm-debut'), date_fin: val('pm-fin'), marge_min: val('pm-marge') }
+          });
+          afficher('promotions');
+        } catch (e) { message('pm-msg', 'erreur', e.message); }
+      };
+    } else if (o === 'controles') {
+      const formats = await api('/tarification/formats');
+      c.innerHTML = `
+        <div class="ligne-champs">
+          <label class="champ">Format<select id="ct-format">${formats.map(f => `<option value="${esc(f.code)}" ${f.code === 'SUP' ? 'selected' : ''}>${esc(f.libelle)}</option>`).join('')}</select></label>
+          <label class="champ">Écart max entre formats (%)<input id="ct-ecart" type="number" value="15" style="width:80px"></label>
+          <button id="ct-lancer">Lancer les contrôles</button>
+        </div>
+        <div id="ct-resultats"></div>`;
+      const lancer = async () => {
+        const r = await api(`/tarification/controles?format=${val('ct-format')}&ecart_max=${val('ct-ecart')}`);
+        const types = { prix_au_kilo: 'Prix au kilo croissant avec la taille', ordre_de_gamme: 'Ordre de gamme inversé', ecart_formats: 'Écart excessif entre formats' };
+        document.getElementById('ct-resultats').innerHTML = `
+          <div class="message ${r.anomalies.length ? 'erreur' : 'ok'}">${r.nb_tarifs_controles} tarif(s) contrôlé(s) — ${r.anomalies.length} anomalie(s).</div>
+          ${r.anomalies.length ? `<div class="table-defilante"><table>
+            <tr><th>Type</th><th>Anomalie</th></tr>
+            ${r.anomalies.map(a => `<tr><td><span class="badge orange">${esc(types[a.type] || a.type)}</span></td><td>${esc(a.message)}</td></tr>`).join('')}
+          </table></div>` : ''}`;
+      };
+      document.getElementById('ct-lancer').onclick = lancer;
+      await lancer();
     }
   }
   await afficher('proposer');
@@ -1002,11 +1207,14 @@ async function vueVeille(page) {
     const c = document.getElementById('v-contenu');
     if (o === 'saisie') {
       const enseignes = await api('/veille/enseignes');
+      const attente = fileHorsConnexion();
       c.innerHTML = `
+        ${attente.length ? `<div class="message info">${attente.length} relevé(s) en attente de synchronisation. <button class="petit" id="rv-sync">Synchroniser maintenant</button></div>` : ''}
         <div class="carte">
-          <h3>Relevé de prix concurrent</h3>
+          <h3>Relevé de prix concurrent <span class="petite-note">— fonctionne hors connexion, synchronisation au retour du réseau</span></h3>
           <div class="ligne-champs">
             <label class="champ">Code barres *<input id="rv-cb" placeholder="scanner ou saisir"></label>
+            <button class="secondaire" id="rv-scanner" title="Lecture par la caméra">📷 Scanner</button>
             <label class="champ">Enseigne<select id="rv-enseigne">${enseignes.map(e => `<option value="${esc(e.code)}">${esc(e.nom)}</option>`).join('')}</select></label>
             <label class="champ">Point de relevé<input id="rv-point" placeholder="magasin / site"></label>
             <label class="champ">Prix TTC (F CFA) *<input id="rv-prix" type="number"></label>
@@ -1015,14 +1223,57 @@ async function vueVeille(page) {
             <label class="champ">Date<input id="rv-date" type="date"></label>
             <button id="rv-enregistrer">Enregistrer le relevé</button>
           </div>
+          <div id="rv-scan-zone"></div>
           <div id="rv-msg"></div>
         </div>`;
-      document.getElementById('rv-enregistrer').onclick = async (ev, forcer = false) => {
+      const btnSync = document.getElementById('rv-sync');
+      if (btnSync) btnSync.onclick = async () => {
+        const n = await synchroniserReleves();
+        message('rv-msg', 'ok', `${n} relevé(s) synchronisé(s).`);
+        setTimeout(() => afficher('saisie'), 900);
+      };
+      // Lecture du code barres par la caméra (F-M7-02), avec repli en saisie manuelle
+      document.getElementById('rv-scanner').onclick = async () => {
+        const zone = document.getElementById('rv-scan-zone');
+        if (!('BarcodeDetector' in window)) {
+          zone.innerHTML = '<div class="message info">Lecture caméra non prise en charge par ce navigateur : saisissez le code manuellement.</div>';
+          return;
+        }
         try {
-          const r = await api('/veille/releves', {
-            method: 'POST',
-            body: { code_barres: val('rv-cb'), enseigne_code: val('rv-enseigne'), point_de_releve: val('rv-point'), prix_ttc: val('rv-prix'), type_prix: val('rv-type'), disponibilite: val('rv-dispo'), date_releve: val('rv-date') || null, confirmer_aberrant: forcer }
-          });
+          const flux = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+          zone.innerHTML = '<video id="rv-video" autoplay playsinline style="max-width:100%;border-radius:8px"></video> <button class="petit danger" id="rv-stop">Arrêter</button>';
+          const video = document.getElementById('rv-video');
+          video.srcObject = flux;
+          const detecteur = new BarcodeDetector({ formats: ['ean_13', 'ean_8', 'upc_a'] });
+          let actif = true;
+          const arreter = () => { actif = false; flux.getTracks().forEach(t => t.stop()); zone.innerHTML = ''; };
+          document.getElementById('rv-stop').onclick = arreter;
+          const boucle = async () => {
+            if (!actif) return;
+            try {
+              const codes = await detecteur.detect(video);
+              if (codes.length) {
+                document.getElementById('rv-cb').value = codes[0].rawValue;
+                arreter();
+                document.getElementById('rv-prix').focus();
+                return;
+              }
+            } catch { /* image pas encore prête */ }
+            setTimeout(boucle, 300);
+          };
+          boucle();
+        } catch (e) {
+          zone.innerHTML = `<div class="message erreur">Caméra inaccessible : ${esc(e.message)}</div>`;
+        }
+      };
+      document.getElementById('rv-enregistrer').onclick = async (ev, forcer = false) => {
+        const corps = {
+          code_barres: val('rv-cb'), enseigne_code: val('rv-enseigne'), point_de_releve: val('rv-point'),
+          prix_ttc: val('rv-prix'), type_prix: val('rv-type'), disponibilite: val('rv-dispo'),
+          date_releve: val('rv-date') || null, confirmer_aberrant: forcer
+        };
+        try {
+          const r = await api('/veille/releves', { method: 'POST', body: corps });
           message('rv-msg', 'ok', r.apparie ? `Relevé enregistré et apparié à ${r.article_code}.` : 'Relevé enregistré — non apparié, à traiter dans la file d\'appariement.');
           document.getElementById('rv-cb').value = ''; document.getElementById('rv-prix').value = '';
         } catch (e) {
@@ -1031,6 +1282,13 @@ async function vueVeille(page) {
             const b = document.createElement('button'); b.className = 'petit'; b.textContent = 'Confirmer malgré tout';
             b.onclick = () => document.getElementById('rv-enregistrer').onclick(null, true);
             document.getElementById('rv-msg').firstChild.appendChild(b);
+          } else if (e.message === 'Failed to fetch') {
+            // Hors connexion : mise en file locale, synchronisation différée (F-M7-01)
+            const file = fileHorsConnexion();
+            file.push({ ...corps, date_releve: corps.date_releve || new Date().toISOString().slice(0, 10) });
+            localStorage.setItem('tarifaire_releves_attente', JSON.stringify(file));
+            message('rv-msg', 'info', `Hors connexion : relevé mis en file (${file.length} en attente). Il sera synchronisé au retour du réseau.`);
+            document.getElementById('rv-cb').value = ''; document.getElementById('rv-prix').value = '';
           } else message('rv-msg', 'erreur', e.message);
         }
       };
@@ -1224,18 +1482,196 @@ async function vueAdmin(page) {
       try { journal = await api('/admin/journal'); }
       catch { c.innerHTML = '<div class="message erreur">Accès réservé (rôle comptable au minimum).</div>'; return; }
       c.innerHTML = `
+        <div class="actions-page">
+          <button class="secondaire" id="jr-verifier">Vérifier l'intégrité de la chaîne du journal</button>
+          <span id="jr-verdict"></span>
+        </div>
         <div class="table-defilante"><table>
           <tr><th>Date</th><th>Utilisateur</th><th>Action</th><th>Objet</th><th>Identifiant</th><th>Détail</th></tr>
           ${journal.map(j => `<tr><td>${new Date(j.date_action).toLocaleString('fr-FR')}</td><td>${esc(j.utilisateur || '')}</td>
             <td><span class="badge gris">${esc(j.action)}</span></td><td>${esc(j.objet_type)}</td>
             <td>${esc(j.objet_id || '')}</td><td class="petite-note">${esc(j.detail || '')}</td></tr>`).join('')}
         </table></div>`;
+      document.getElementById('jr-verifier').onclick = async () => {
+        const v = await api('/admin/journal-verification');
+        document.getElementById('jr-verdict').innerHTML = v.integre
+          ? `<span class="badge vert">chaîne intègre (${v.entrees_verifiees} entrées vérifiées)</span>`
+          : `<span class="badge rouge">RUPTURE à l'entrée ${v.rupture_id} : ${esc(v.motif)}</span>`;
+      };
     }
   }
   await afficher('utilisateurs');
 }
 
+/* ---------------------------------- Marge réalisée (lot 2) ---------------------------------- */
+async function vueMarges(page) {
+  page.innerHTML = `
+    <h1>Marge réalisée</h1>
+    <p class="sous-titre">Comparaison entre la marge théorique des tarifs publiés et la marge constatée sur les ventes remontées de l'ERP</p>
+    <div class="carte">
+      <h3>Importer les ventes (flux FE07)</h3>
+      <p class="petite-note">Colonnes : code_barres (ou code_interne);point_de_vente;date_vente;quantite;ca_ttc</p>
+      <textarea id="mv-csv" placeholder="Collez le CSV des ventes…"></textarea>
+      <div class="actions-page"><button id="mv-importer">Importer les ventes</button></div>
+      <div id="mv-msg"></div>
+    </div>
+    <div class="ligne-champs">
+      <label class="champ">Depuis le<input id="mv-depuis" type="date"></label>
+      <label class="champ">Famille<input id="mv-famille" placeholder="code famille"></label>
+      <button id="mv-charger">Actualiser</button>
+    </div>
+    <div id="mv-resultats"></div>`;
+
+  document.getElementById('mv-importer').onclick = async () => {
+    try {
+      const r = await api('/pilotage/ventes-import/csv', { method: 'POST', body: { contenu: val('mv-csv') } });
+      message('mv-msg', 'ok', `${r.importees} ligne(s) de vente importée(s), ${r.rejets.length} rejet(s).`);
+      if (r.rejets.length) document.getElementById('mv-msg').innerHTML +=
+        '<ul>' + r.rejets.slice(0, 10).map(x => `<li>Ligne ${x.ligne} : ${esc(x.motif)}</li>`).join('') + '</ul>';
+      charger();
+    } catch (e) { message('mv-msg', 'erreur', e.message); }
+  };
+
+  async function charger() {
+    const q = new URLSearchParams();
+    if (val('mv-depuis')) q.set('depuis', val('mv-depuis'));
+    if (val('mv-famille')) q.set('famille', val('mv-famille').toUpperCase());
+    const r = await api('/pilotage/marge-realisee?' + q.toString());
+    document.getElementById('mv-resultats').innerHTML = `
+      <div class="grille kpi">
+        <div class="carte"><div class="valeur">${fcfa(r.total.ca_ttc)}</div><div class="libelle">Chiffre d'affaires TTC</div></div>
+        <div class="carte"><div class="valeur">${fcfa(r.total.marge_realisee)}</div><div class="libelle">Marge réalisée (références avec coût connu)</div></div>
+        <div class="carte"><div class="valeur">${fmt(r.total.nb_references)}</div><div class="libelle">Références vendues (${fmt(r.total.sans_cout)} sans coût calculé)</div></div>
+      </div>
+      <div class="table-defilante"><table>
+        <tr><th>Article</th><th>Famille</th><th class="num">Qté vendue</th><th class="num">CA TTC</th><th class="num">CUMP</th>
+        <th class="num">Marge réalisée</th><th class="num">Taux réalisé</th><th class="num">Taux théorique</th><th class="num">Écart</th></tr>
+        ${r.lignes.map(l => `<tr>
+          <td>${esc(l.article_code)}<br><span class="petite-note">${esc(l.libelle)}</span></td>
+          <td>${esc(l.famille || '')}</td><td class="num">${fmt(l.quantite_vendue)}</td>
+          <td class="num">${fcfa(l.ca_ttc)}</td>
+          <td class="num">${l.cout_unitaire !== null ? fmt(l.cout_unitaire, 1) : '<span class="badge rouge">inconnu</span>'}</td>
+          <td class="num">${l.marge_realisee !== null ? fcfa(l.marge_realisee) : '—'}</td>
+          <td class="num">${l.taux_marque_realise !== null ? fmt(l.taux_marque_realise, 1) + ' %' : '—'}</td>
+          <td class="num">${l.taux_marque_theorique !== null ? fmt(l.taux_marque_theorique, 1) + ' %' : '—'}</td>
+          <td class="num">${l.ecart_taux !== null ? `<span class="badge ${l.ecart_taux < -2 ? 'rouge' : l.ecart_taux > 2 ? 'vert' : 'gris'}">${l.ecart_taux > 0 ? '+' : ''}${fmt(l.ecart_taux, 1)}</span>` : '—'}</td>
+        </tr>`).join('') || '<tr><td colspan="9">Aucune vente importée sur la période.</td></tr>'}
+      </table></div>
+      <p class="petite-note">Un écart négatif signale une exécution en dessous de la politique : démarque non prévue, prix mal appliqué en caisse ou promotion non tracée.</p>`;
+  }
+  document.getElementById('mv-charger').onclick = charger;
+  await charger();
+}
+
+/* ---------------------------------- Mon compte (lot 4) ---------------------------------- */
+async function vueCompte(page) {
+  const notifs = await api('/compte/notifications');
+  const doitChanger = etat.utilisateur && etat.utilisateur.doit_changer_mdp;
+  page.innerHTML = `
+    <h1>Mon compte</h1>
+    <p class="sous-titre">${esc(etat.utilisateur?.email || '')} — rôle ${esc(etat.utilisateur?.role || '')}</p>
+    ${doitChanger ? '<div class="message erreur">Votre mot de passe initial doit être changé avant toute utilisation en conditions réelles.</div>' : ''}
+    <div class="deux-colonnes">
+      <div class="carte">
+        <h3>Changer mon mot de passe</h3>
+        <div class="ligne-champs">
+          <label class="champ">Ancien<input id="cp-ancien" type="password"></label>
+          <label class="champ">Nouveau (10 caractères min.)<input id="cp-nouveau" type="password"></label>
+          <button id="cp-changer">Changer</button>
+        </div>
+        <div id="cp-msg"></div>
+      </div>
+      <div class="carte">
+        <h3>Double authentification (TOTP)</h3>
+        <p class="petite-note">Renforce l'accès aux données de coût et de marge (F-M11-03). Fonctionne avec toute application d'authentification (Google Authenticator, Aegis, FreeOTP…).</p>
+        <div class="actions-page">
+          <button id="fa2-preparer" class="secondaire">${etat.utilisateur?.totp_actif ? 'Régénérer le secret' : 'Activer la double authentification'}</button>
+          <button id="fa2-desactiver" class="danger petit">Désactiver</button>
+        </div>
+        <div id="fa2-zone"></div>
+      </div>
+    </div>
+    <h2>Notifications</h2>
+    <div class="table-defilante"><table>
+      <tr><th>Date</th><th>Titre</th><th>Détail</th><th></th></tr>
+      ${notifs.map(n => `<tr style="${n.lue ? 'opacity:.55' : ''}">
+        <td>${new Date(n.cree_le).toLocaleString('fr-FR')}</td>
+        <td><b>${esc(n.titre)}</b>${n.envoyee_courriel ? ' <span class="badge gris">courriel envoyé</span>' : ''}</td>
+        <td class="petite-note" style="white-space:pre-line">${esc(n.corps || '')}</td>
+        <td>${n.lue ? '' : `<button class="petit secondaire" onclick="marquerLue(${n.id})">Marquer lue</button>`}</td>
+      </tr>`).join('') || '<tr><td colspan="4">Aucune notification.</td></tr>'}
+    </table></div>`;
+
+  window.marquerLue = async id => { await api(`/compte/notifications/${id}/lue`, { method: 'POST' }); rendre(); };
+  document.getElementById('cp-changer').onclick = async () => {
+    try {
+      await api('/compte/mot-de-passe', { method: 'POST', body: { ancien: val('cp-ancien'), nouveau: val('cp-nouveau') } });
+      etat.utilisateur.doit_changer_mdp = false;
+      localStorage.setItem('tarifaire_utilisateur', JSON.stringify(etat.utilisateur));
+      message('cp-msg', 'ok', 'Mot de passe changé.');
+    } catch (e) { message('cp-msg', 'erreur', e.message); }
+  };
+  document.getElementById('fa2-preparer').onclick = async () => {
+    const r = await api('/compte/2fa/preparer', { method: 'POST' });
+    document.getElementById('fa2-zone').innerHTML = `
+      <div class="message info">Secret : <code>${esc(r.secret)}</code><br>
+      URL : <code style="word-break:break-all">${esc(r.otpauth)}</code><br>${esc(r.aide)}</div>
+      <div class="ligne-champs">
+        <label class="champ">Code de confirmation<input id="fa2-code" inputmode="numeric" maxlength="6"></label>
+        <button id="fa2-confirmer">Confirmer l'activation</button>
+      </div><div id="fa2-msg"></div>`;
+    document.getElementById('fa2-confirmer').onclick = async () => {
+      try {
+        await api('/compte/2fa/confirmer', { method: 'POST', body: { code: val('fa2-code') } });
+        etat.utilisateur.totp_actif = true;
+        localStorage.setItem('tarifaire_utilisateur', JSON.stringify(etat.utilisateur));
+        message('fa2-msg', 'ok', 'Double authentification activée : elle sera exigée à la prochaine connexion.');
+      } catch (e) { message('fa2-msg', 'erreur', e.message); }
+    };
+  };
+  document.getElementById('fa2-desactiver').onclick = async () => {
+    const code = prompt('Code de double authentification (laisser vide si non activée) :') || '';
+    try {
+      await api('/compte/2fa/desactiver', { method: 'POST', body: { code } });
+      etat.utilisateur.totp_actif = false;
+      localStorage.setItem('tarifaire_utilisateur', JSON.stringify(etat.utilisateur));
+      rendre();
+    } catch (e) { alert(e.message); }
+  };
+}
+
+/* ------------------------- File de relevés hors connexion (lot 3) ------------------------- */
+function fileHorsConnexion() {
+  return JSON.parse(localStorage.getItem('tarifaire_releves_attente') || '[]');
+}
+
+async function synchroniserReleves() {
+  const attente = fileHorsConnexion();
+  if (!attente.length || !etat.token) return 0;
+  let envoyes = 0;
+  const restants = [];
+  for (const releve of attente) {
+    try {
+      await api('/veille/releves', { method: 'POST', body: { ...releve, confirmer_aberrant: true } });
+      envoyes++;
+    } catch (e) {
+      if (e.message === 'Failed to fetch' || e.statut === 429 || e.statut === 503) restants.push(releve);
+      // un relevé rejeté pour une autre raison (article inconnu, etc.) est abandonné, pas rejoué en boucle
+    }
+  }
+  localStorage.setItem('tarifaire_releves_attente', JSON.stringify(restants));
+  return envoyes;
+}
+
+window.addEventListener('online', () => {
+  synchroniserReleves().then(n => { if (n) alert(`${n} relevé(s) hors connexion synchronisé(s).`); });
+});
+
 /* ---------------------------------- Démarrage ---------------------------------- */
 window.naviguer = naviguer;
 window.deconnexion = deconnexion;
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
 rendre();
+synchroniserReleves();
