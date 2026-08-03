@@ -262,6 +262,45 @@ test('lot 1 : verrouillage de compte après échecs répétés', { skip: !actif 
   );
 });
 
+test('référentiel : article multi-fournisseurs, principal et comparaison', { skip: !actif }, async () => {
+  await api('/referentiels/fournisseurs', { method: 'POST', body: { code: 'FRN2', nom: 'Deuxième fournisseur', pays: 'TR', devise: 'USD' } });
+  await api('/admin/taux-change', { method: 'POST', body: { devise: 'USD', cours: 600 } });
+
+  // T001 a déjà TEST comme fournisseur potentiel ; on rattache deux conditions
+  await api('/referentiels/conditions-achat', {
+    method: 'POST', body: { fournisseur_code: 'TEST', article_code: 'T001', prix_achat: 2000, devise: 'XOF' }
+  });
+  await api('/referentiels/conditions-achat', {
+    method: 'POST', body: { fournisseur_code: 'FRN2', article_code: 'T001', prix_achat: 3, devise: 'USD', remise_pct: 10 }
+  });
+
+  const comp = await api('/referentiels/articles/T001/comparaison-fournisseurs');
+  assert.equal(comp.comparaison.length, 2);
+  // FRN2 : 3 USD - 10 % = 2,7 USD x 600 = 1620 F, moins cher que 2000 F : premier du classement
+  assert.equal(comp.comparaison[0].fournisseur_code, 'FRN2');
+  assert.equal(comp.comparaison[0].prix_net_xof, 1620);
+
+  // Rattacher un fournisseur sans condition est refusé
+  await assert.rejects(
+    api('/referentiels/articles/T001/fournisseur-principal', { method: 'POST', body: { fournisseur_code: 'INEXISTANT' } }),
+    e => e.statut === 400
+  );
+  // Bascule du principal vers FRN2
+  await api('/referentiels/articles/T001/fournisseur-principal', { method: 'POST', body: { fournisseur_code: 'FRN2' } });
+  const comp2 = await api('/referentiels/articles/T001/comparaison-fournisseurs');
+  assert.equal(comp2.principal, 'FRN2');
+
+  // Codes barres secondaires : ajout valide, doublon refusé
+  await api('/referentiels/articles/T001/codes-barres', { method: 'POST', body: { code_barres: '96385074', description: 'lot de 6' } });
+  await assert.rejects(
+    api('/referentiels/articles/T002/codes-barres', { method: 'POST', body: { code_barres: '96385074' } }),
+    e => e.statut === 409
+  );
+  const fiche = await api('/referentiels/articles/T001');
+  assert.equal(fiche.codes_barres_secondaires.length, 1);
+  assert.equal(fiche.conditions_achat.length, 2);
+});
+
 test('lot 4 : documentation API disponible sans jeton', { skip: !actif }, async () => {
   const rep = await fetch(`${B}/docs`);
   assert.equal(rep.ok, true);

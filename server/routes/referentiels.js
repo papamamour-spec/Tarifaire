@@ -59,13 +59,101 @@ r.post('/conditions-achat', exiger('acheteur'), async (req, res) => {
   if (!fournisseur_code || !article_code || num(prix_achat) === null) {
     return res.status(400).json({ erreur: 'Fournisseur, article et prix requis' });
   }
+  const { rows: fRows } = await query('SELECT code FROM fournisseurs WHERE code=$1', [fournisseur_code]);
+  if (!fRows.length) return res.status(404).json({ erreur: `Fournisseur ${fournisseur_code} inconnu : créez-le d'abord` });
   await query(
     `INSERT INTO conditions_achat (fournisseur_code, article_code, prix_achat, devise, remise_pct, incoterm, date_effet, date_fin)
      VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7::date,CURRENT_DATE),$8)`,
     [fournisseur_code, article_code, num(prix_achat), devise || 'XOF', num(remise_pct) || 0,
       incoterm || null, date_effet || null, date_fin || null]);
-  await auditer(req, 'enregistrement', 'condition_achat', article_code);
+  // Premier fournisseur rattaché à l'article : il devient le principal par défaut (F-M1-08)
+  await query(
+    `UPDATE articles SET fournisseur_code=$1, modifie_le=now()
+      WHERE code_interne=$2 AND fournisseur_code IS NULL`, [fournisseur_code, article_code]);
+  await auditer(req, 'enregistrement', 'condition_achat', article_code, fournisseur_code);
   res.json({ ok: true });
+});
+
+r.delete('/conditions-achat/:id', exiger('acheteur'), async (req, res) => {
+  await query('DELETE FROM conditions_achat WHERE id=$1', [req.params.id]);
+  await auditer(req, 'suppression', 'condition_achat', req.params.id);
+  res.json({ ok: true });
+});
+
+/* Fournisseur principal de l'article (F-M1-08) : doit avoir une condition d'achat active */
+r.post('/articles/:code/fournisseur-principal', exiger('acheteur'), async (req, res) => {
+  const { fournisseur_code } = req.body || {};
+  if (!fournisseur_code) return res.status(400).json({ erreur: 'Code fournisseur requis' });
+  const { rows } = await query(
+    'SELECT 1 FROM conditions_achat WHERE article_code=$1 AND fournisseur_code=$2',
+    [req.params.code, fournisseur_code]);
+  if (!rows.length) {
+    return res.status(400).json({ erreur: 'Ce fournisseur n’a aucune condition d’achat sur cet article : ajoutez-en une d’abord' });
+  }
+  await query('UPDATE articles SET fournisseur_code=$1, modifie_le=now() WHERE code_interne=$2',
+    [fournisseur_code, req.params.code]);
+  await query(
+    `INSERT INTO historique_articles (article_code, champ, nouvelle_valeur, source, auteur)
+     VALUES ($1,'fournisseur_principal',$2,'saisie',$3)`,
+    [req.params.code, fournisseur_code, req.utilisateur.email]);
+  await auditer(req, 'fournisseur_principal', 'article', req.params.code, fournisseur_code);
+  res.json({ ok: true });
+});
+
+/* Codes barres secondaires (F-M1-12) : lot, unité consommateur, appariements de veille */
+r.post('/articles/:code/codes-barres', exiger('acheteur'), async (req, res) => {
+  const { code_barres, description } = req.body || {};
+  if (!code_barres) return res.status(400).json({ erreur: 'Code barres requis' });
+  if (!validerEan(code_barres)) return res.status(400).json({ erreur: 'Code barres invalide (clé EAN/UPC incorrecte)' });
+  const { rows: conflit } = await query(
+    `SELECT code_interne AS porteur FROM articles WHERE code_barres=$1
+     UNION SELECT article_code FROM codes_barres_secondaires WHERE code_barres=$1`, [code_barres]);
+  if (conflit.length) return res.status(409).json({ erreur: `Code barres déjà porté par ${conflit[0].porteur}` });
+  await query(
+    `INSERT INTO codes_barres_secondaires (code_barres, article_code, description) VALUES ($1,$2,$3)`,
+    [code_barres, req.params.code, description || null]);
+  await auditer(req, 'ajout_code_barres', 'article', req.params.code, code_barres);
+  res.json({ ok: true });
+});
+
+r.delete('/articles/:code/codes-barres/:cb', exiger('acheteur'), async (req, res) => {
+  await query('DELETE FROM codes_barres_secondaires WHERE code_barres=$1 AND article_code=$2',
+    [req.params.cb, req.params.code]);
+  await auditer(req, 'suppression_code_barres', 'article', req.params.code, req.params.cb);
+  res.json({ ok: true });
+});
+
+/*
+ * Comparaison des fournisseurs d'un article (F-M3-07) : dernières conditions par fournisseur,
+ * converties en devise de référence avec le dernier cours connu.
+ */
+r.get('/articles/:code/comparaison-fournisseurs', async (req, res) => {
+  const { rows } = await query(
+    `SELECT DISTINCT ON (ca.fournisseur_code) ca.*, f.nom AS fournisseur_nom, f.pays,
+            tc.cours AS dernier_cours
+       FROM conditions_achat ca
+       JOIN fournisseurs f ON f.code = ca.fournisseur_code
+       LEFT JOIN LATERAL (
+         SELECT cours FROM taux_change t WHERE t.devise = ca.devise ORDER BY date_cours DESC LIMIT 1
+       ) tc ON TRUE
+      WHERE ca.article_code=$1 AND (ca.date_fin IS NULL OR ca.date_fin >= CURRENT_DATE)
+      ORDER BY ca.fournisseur_code, ca.date_effet DESC`, [req.params.code]);
+  const { rows: aRows } = await query('SELECT fournisseur_code FROM articles WHERE code_interne=$1', [req.params.code]);
+  const principal = aRows.length ? aRows[0].fournisseur_code : null;
+  const comparaison = rows.map(c => {
+    const cours = c.devise === 'XOF' ? 1 : (c.dernier_cours !== null ? Number(c.dernier_cours) : null);
+    const net = Number(c.prix_achat) * (1 - Number(c.remise_pct) / 100);
+    return {
+      id: c.id, fournisseur_code: c.fournisseur_code, fournisseur_nom: c.fournisseur_nom, pays: c.pays,
+      prix_achat: Number(c.prix_achat), remise_pct: Number(c.remise_pct), devise: c.devise,
+      incoterm: c.incoterm, date_effet: c.date_effet,
+      prix_net_devise: round(net, 4),
+      prix_net_xof: cours !== null ? round(net * cours, 2) : null,
+      cours_utilise: cours,
+      principal: c.fournisseur_code === principal
+    };
+  }).sort((a, b) => (a.prix_net_xof ?? Infinity) - (b.prix_net_xof ?? Infinity));
+  res.json({ principal, comparaison });
 });
 
 /* ------------------------- Articles ------------------------- */
