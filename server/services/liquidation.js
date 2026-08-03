@@ -14,18 +14,34 @@ async function chargerTaxes() {
   return rows;
 }
 
-/* Position en vigueur à une date donnée (F-M2-07 : recalcul à date), dernière version par défaut. */
+/*
+ * Position en vigueur à une date donnée (F-M2-07), avec résolution HIÉRARCHIQUE :
+ * si le code exact est absent, on retombe sur la sous-position ou le chapitre le plus
+ * précis dont le code est un préfixe (10 → 8 → 6 → 4 → 2 chiffres). Le résultat porte
+ * `niveau` ('exact' ou 'approche') et `code_demande` pour que la restitution le signale.
+ */
 async function chargerPosition(code, date) {
   if (!code) return null;
+  const demande = String(code).replace(/\D/g, '');
+  if (!demande) return null;
   const { rows } = await query(
     `SELECT * FROM positions_tarifaires
-      WHERE code=$1 AND date_effet <= COALESCE($2::date, CURRENT_DATE)
-      ORDER BY date_effet DESC LIMIT 1`, [code, date || null]);
-  if (rows.length) return rows[0];
-  // Aucune version en vigueur à cette date : on retombe sur la plus ancienne connue
-  const { rows: toutes } = await query(
-    `SELECT * FROM positions_tarifaires WHERE code=$1 ORDER BY date_effet ASC LIMIT 1`, [code]);
-  return toutes[0] || null;
+      WHERE $1 LIKE code || '%' AND date_effet <= COALESCE($2::date, CURRENT_DATE)
+      ORDER BY length(code) DESC, date_effet DESC LIMIT 1`, [demande, date || null]);
+  let position = rows[0];
+  if (!position) {
+    // Aucune version en vigueur à cette date : plus ancienne connue du préfixe le plus long
+    const { rows: toutes } = await query(
+      `SELECT * FROM positions_tarifaires WHERE $1 LIKE code || '%'
+        ORDER BY length(code) DESC, date_effet ASC LIMIT 1`, [demande]);
+    position = toutes[0];
+  }
+  if (!position) return null;
+  return {
+    ...position,
+    code_demande: demande,
+    niveau: position.code === demande ? 'exact' : 'approche'
+  };
 }
 
 async function chargerExonerations() {
@@ -38,7 +54,8 @@ function tauxApplicable(taxe, position, origine, exonerations) {
   let taux = taxe.taux_depuis_position ? (position ? Number(position.taux_dd) : 0) : Number(taxe.taux || 0);
   for (const ex of exonerations) {
     if (ex.code_taxe !== taxe.code) continue;
-    const okPos = !ex.position_prefixe || (position && position.code.startsWith(ex.position_prefixe));
+    const codeReference = position ? (position.code_demande || position.code) : '';
+    const okPos = !ex.position_prefixe || (position && codeReference.startsWith(ex.position_prefixe));
     const okOri = !ex.origine || (origine && origine.toUpperCase() === ex.origine.toUpperCase());
     if (okPos && okOri) taux = Number(ex.taux_applique);
   }
@@ -76,7 +93,10 @@ async function liquider({ valeurEnDouane, positionCode, origine, date }) {
   const totalCout = lignes.filter(l => l.traitement === 'cout').reduce((s, l) => s + l.montant, 0);
   const totalCreance = lignes.filter(l => l.traitement === 'creance').reduce((s, l) => s + l.montant, 0);
   return {
-    position: position ? { code: position.code, libelle: position.libelle, taux_dd: Number(position.taux_dd) } : null,
+    position: position ? {
+      code: position.code, libelle: position.libelle, taux_dd: Number(position.taux_dd),
+      niveau: position.niveau, code_demande: position.code_demande
+    } : null,
     valeur_en_douane: vd,
     lignes,
     total: round(total, 0),

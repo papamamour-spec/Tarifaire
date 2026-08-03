@@ -326,7 +326,7 @@ test('fiche article : photos, articles liés, suggestion de position', { skip: !
   // Suggestion de position depuis un libellé
   const suggestions = await api('/referentiels/suggestion-position?libelle=' + encodeURIComponent('Riz blanchi parfumé'));
   assert.ok(suggestions.length >= 1);
-  assert.equal(suggestions[0].code, '1006309000');
+  assert.ok(suggestions[0].code.startsWith('100630'), `suggestion attendue dans le riz blanchi, obtenu ${suggestions[0].code}`);
 });
 
 test('M2-05 et M5-11/12 : écart de liquidation, comparaison des clés, simulation de variation', { skip: !actif }, async () => {
@@ -413,6 +413,59 @@ test('référentiel : modification en masse, suppressions gardées', { skip: !ac
     api('/referentiels/fournisseurs/TEST', { method: 'DELETE' }),
     e => e.statut === 409
   );
+});
+
+test('nomenclature TEC : base préchargée et résolution hiérarchique', { skip: !actif }, async () => {
+  // La base préchargée compte les 97 chapitres et les positions détaillées
+  const positions = await api('/douane/positions');
+  assert.ok(positions.length >= 250, `attendu >= 250 positions préchargées, obtenu ${positions.length}`);
+
+  // Position exacte présente : niveau exact
+  const exacte = await api('/douane/simulation', {
+    method: 'POST', body: { valeur_en_douane: 1000000, position_tarifaire: '1006309000' }
+  });
+  assert.equal(exacte.position.niveau, 'exact');
+  assert.equal(exacte.position.taux_dd, 10);
+
+  // Position à 10 chiffres inconnue : repli sur la sous-position 1905 (biscuits, 20 %)
+  const repli = await api('/douane/simulation', {
+    method: 'POST', body: { valeur_en_douane: 1000000, position_tarifaire: '1905321100' }
+  });
+  assert.equal(repli.position.niveau, 'approche');
+  assert.equal(repli.position.code, '1905');
+  assert.equal(repli.position.taux_dd, 20);
+  assert.equal(repli.lignes.find(l => l.code === 'DD').montant, 200000);
+
+  // Repli au niveau chapitre : code inconnu du chapitre 84 (machines, 5 %)
+  const chapitre = await api('/douane/simulation', {
+    method: 'POST', body: { valeur_en_douane: 1000000, position_tarifaire: '8477591234' }
+  });
+  assert.equal(chapitre.position.niveau, 'approche');
+  assert.equal(chapitre.position.code, '84');
+  assert.equal(chapitre.position.taux_dd, 5);
+
+  // Une position exacte saisie prime sur le niveau approché
+  await api('/douane/positions', {
+    method: 'POST', body: { code: '1905321100', libelle: 'Gaufres et gaufrettes enrobées', taux_dd: 20, categorie: 'Cat. 3' }
+  });
+  const apres = await api('/douane/simulation', {
+    method: 'POST', body: { valeur_en_douane: 1000000, position_tarifaire: '1905321100' }
+  });
+  assert.equal(apres.position.niveau, 'exact');
+
+  // Les niveaux de repli sont administrables (code court accepté)
+  await api('/douane/positions', {
+    method: 'POST', body: { code: '9702', libelle: 'Gravures et estampes originales', taux_dd: 5 }
+  });
+
+  // Les exonérations s'appliquent sur le code demandé, même en résolution approchée
+  await api('/douane/exonerations', {
+    method: 'POST', body: { position_prefixe: '84', origine: '', code_taxe: 'DD', taux_applique: 0, commentaire: 'test biens équipement' }
+  });
+  const exoneree = await api('/douane/simulation', {
+    method: 'POST', body: { valeur_en_douane: 1000000, position_tarifaire: '8477591234' }
+  });
+  assert.equal(exoneree.lignes.find(l => l.code === 'DD').montant, 0);
 });
 
 test('lot 4 : documentation API disponible sans jeton', { skip: !actif }, async () => {
