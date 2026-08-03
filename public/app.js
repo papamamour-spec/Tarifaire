@@ -189,8 +189,123 @@ function badgeStatutDossier(s) {
 /* ---------------------------------- Référentiel article ---------------------------------- */
 async function vueArticles(page) {
   page.innerHTML = `
-    <h1>Référentiel article</h1>
+    <h1>Référentiel</h1>
     <p class="sous-titre">Socle de la plateforme : toute imprécision se propage au coût et à la marge</p>
+    <div class="onglets">
+      <button data-o="articles" class="actif">Articles</button>
+      <button data-o="fournisseurs">Fournisseurs</button>
+      <button data-o="familles">Familles</button>
+    </div>
+    <div id="ref-contenu"></div>`;
+  const onglets = page.querySelectorAll('.onglets button');
+  onglets.forEach(b => b.onclick = () => { onglets.forEach(x => x.classList.remove('actif')); b.classList.add('actif'); afficherRef(b.dataset.o); });
+
+  async function afficherRef(o) {
+    const conteneur = document.getElementById('ref-contenu');
+    if (o === 'articles') return afficherOngletArticles(conteneur);
+    if (o === 'fournisseurs') return afficherOngletFournisseurs(conteneur, () => afficherRef('fournisseurs'));
+    if (o === 'familles') return afficherOngletFamilles(conteneur, () => afficherRef('familles'));
+  }
+  await afficherRef('articles');
+}
+
+async function afficherOngletFournisseurs(conteneur, recharger) {
+  const fournisseurs = await api('/referentiels/fournisseurs');
+  conteneur.innerHTML = `
+    <div class="carte">
+      <h3>Ajouter ou modifier un fournisseur <span class="petite-note">(saisir un code existant pour modifier)</span></h3>
+      <div class="ligne-champs">
+        <label class="champ">Code *<input id="fo-code" placeholder="CHIMEX" style="width:110px"></label>
+        <label class="champ">Nom *<input id="fo-nom" style="min-width:220px"></label>
+        <label class="champ">Pays (code)<input id="fo-pays" maxlength="2" style="width:70px" placeholder="CN"></label>
+        <label class="champ">Devise<input id="fo-devise" value="XOF" style="width:80px"></label>
+        <label class="champ">Incoterm par défaut<input id="fo-incoterm" placeholder="FOB" style="width:90px"></label>
+        <label class="champ">Contact<input id="fo-contact" style="min-width:200px" placeholder="courriel ou téléphone"></label>
+        <label><input type="checkbox" id="fo-actif" checked> Actif</label>
+        <button id="fo-enregistrer">Enregistrer</button>
+      </div>
+      <div id="fo-msg"></div>
+    </div>
+    <div class="table-defilante"><table>
+      <tr><th>Code</th><th>Nom</th><th>Pays</th><th>Devise</th><th>Incoterm</th><th>Contact</th><th>Actif</th><th class="num">Articles rattachés</th><th></th></tr>
+      ${fournisseurs.map(f => `<tr>
+        <td><b>${esc(f.code)}</b></td><td>${esc(f.nom)}</td><td>${esc(f.pays || '')}</td>
+        <td>${esc(f.devise)}</td><td>${esc(f.incoterm_defaut || '')}</td><td>${esc(f.contact || '')}</td>
+        <td>${f.actif ? '<span class="badge vert">oui</span>' : '<span class="badge rouge">non</span>'}</td>
+        <td class="num" id="fo-nb-${esc(f.code)}">…</td>
+        <td><button class="petit secondaire" onclick="editerFournisseur('${esc(f.code)}')">Modifier</button></td>
+      </tr>`).join('') || '<tr><td colspan="9">Aucun fournisseur. Créez le premier avec le formulaire ci-dessus.</td></tr>'}
+    </table></div>`;
+  // Nombre d'articles rattachés (conditions d'achat) par fournisseur
+  api('/referentiels/conditions-achat').then(conditions => {
+    const compte = {};
+    for (const c of conditions) {
+      (compte[c.fournisseur_code] = compte[c.fournisseur_code] || new Set()).add(c.article_code);
+    }
+    for (const f of fournisseurs) {
+      const cellule = document.getElementById('fo-nb-' + f.code);
+      if (cellule) cellule.textContent = compte[f.code] ? compte[f.code].size : 0;
+    }
+  }).catch(() => {});
+  window.editerFournisseur = code => {
+    const f = fournisseurs.find(x => x.code === code);
+    if (!f) return;
+    document.getElementById('fo-code').value = f.code;
+    document.getElementById('fo-nom').value = f.nom;
+    document.getElementById('fo-pays').value = f.pays || '';
+    document.getElementById('fo-devise').value = f.devise;
+    document.getElementById('fo-incoterm').value = f.incoterm_defaut || '';
+    document.getElementById('fo-contact').value = f.contact || '';
+    document.getElementById('fo-actif').checked = !!f.actif;
+    document.getElementById('fo-code').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
+  document.getElementById('fo-enregistrer').onclick = async () => {
+    try {
+      await api('/referentiels/fournisseurs', {
+        method: 'POST',
+        body: { code: val('fo-code'), nom: val('fo-nom'), pays: val('fo-pays').toUpperCase(), devise: val('fo-devise').toUpperCase() || 'XOF', incoterm_defaut: val('fo-incoterm').toUpperCase(), contact: val('fo-contact'), actif: coche('fo-actif') }
+      });
+      recharger();
+    } catch (e) { message('fo-msg', 'erreur', e.message); }
+  };
+}
+
+async function afficherOngletFamilles(conteneur, recharger) {
+  const familles = await api('/referentiels/familles');
+  conteneur.innerHTML = `
+    <div class="carte">
+      <h3>Ajouter ou modifier une famille</h3>
+      <div class="ligne-champs">
+        <label class="champ">Code *<input id="fa2-code" style="width:120px"></label>
+        <label class="champ">Libellé *<input id="fa2-libelle" style="min-width:220px"></label>
+        <label class="champ">Famille parente<select id="fa2-parent"><option value="">aucune</option>${familles.map(f => `<option value="${esc(f.code)}">${esc(f.code)}</option>`).join('')}</select></label>
+        <label class="champ">Marge cible (%)<input id="fa2-marge" type="number" step="0.1"></label>
+        <label class="champ">Démarque (%)<input id="fa2-demarque" type="number" step="0.1"></label>
+        <button id="fa2-enregistrer">Enregistrer</button>
+      </div>
+      <div id="fa2-msg"></div>
+    </div>
+    <div class="table-defilante"><table>
+      <tr><th>Code</th><th>Libellé</th><th>Parente</th><th class="num">Marge cible</th><th class="num">Démarque</th></tr>
+      ${familles.map(f => `<tr>
+        <td><b>${esc(f.code)}</b></td><td>${esc(f.libelle)}</td><td>${esc(f.parent_code || '')}</td>
+        <td class="num">${f.marge_cible !== null ? fmt(f.marge_cible, 1) + ' %' : '—'}</td>
+        <td class="num">${f.demarque_taux !== null ? fmt(f.demarque_taux, 1) + ' %' : '—'}</td>
+      </tr>`).join('')}
+    </table></div>`;
+  document.getElementById('fa2-enregistrer').onclick = async () => {
+    try {
+      await api('/referentiels/familles', {
+        method: 'POST',
+        body: { code: val('fa2-code'), libelle: val('fa2-libelle'), parent_code: val('fa2-parent'), marge_cible: val('fa2-marge'), demarque_taux: val('fa2-demarque') }
+      });
+      recharger();
+    } catch (e) { message('fa2-msg', 'erreur', e.message); }
+  };
+}
+
+async function afficherOngletArticles(page) {
+  page.innerHTML = `
     <div class="actions-page">
       <input id="a-recherche" placeholder="Code, code barres, libellé, position…" style="width:280px">
       <label><input type="checkbox" id="a-incomplets"> Données manquantes uniquement</label>
@@ -327,17 +442,42 @@ async function vueFicheArticle(page, args) {
       <button class="secondaire" onclick="naviguer('#/articles')">Retour à la liste</button>
     </div>
     ${!nouveau ? `
+    <div class="carte" id="fa-zone-fournisseurs">
+      <h3>Fournisseurs de l'article <span class="petite-note">— plusieurs fournisseurs possibles, un principal (F-M1-08) ; comparaison au meilleur prix converti (F-M3-07)</span></h3>
+      <div id="fa-comparaison">Chargement…</div>
+      <h3>Rattacher un fournisseur (nouvelle condition d'achat)</h3>
+      <div class="ligne-champs">
+        <label class="champ">Fournisseur<select id="ca-fournisseur">${fournisseurs.map(f => `<option value="${esc(f.code)}">${esc(f.code)} — ${esc(f.nom)}</option>`).join('')}</select></label>
+        <label class="champ">Prix d'achat *<input id="ca-prix" type="number" step="0.0001" style="width:110px"></label>
+        <label class="champ">Devise<input id="ca-devise" value="XOF" style="width:70px"></label>
+        <label class="champ">Remise (%)<input id="ca-remise" type="number" step="0.1" value="0" style="width:80px"></label>
+        <label class="champ">Incoterm<input id="ca-incoterm" placeholder="FOB" style="width:80px"></label>
+        <label class="champ">Date d'effet<input id="ca-date" type="date"></label>
+        <button id="ca-ajouter">Rattacher</button>
+        <button class="secondaire" id="ca-nouveau-fournisseur">+ Nouveau fournisseur</button>
+      </div>
+      <div id="ca-nouveau-zone"></div>
+      <div id="ca-msg"></div>
+    </div>
     <div class="deux-colonnes">
       <div class="carte">
-        <h3>Conditions d'achat</h3>
-        ${(a.conditions_achat || []).length ? `<div class="table-defilante"><table>
-          <tr><th>Fournisseur</th><th class="num">Prix</th><th>Devise</th><th class="num">Remise</th><th>Date d'effet</th></tr>
-          ${a.conditions_achat.map(c => `<tr><td>${esc(c.fournisseur_nom)}</td><td class="num">${fmt(c.prix_achat, 2)}</td><td>${esc(c.devise)}</td><td class="num">${fmt(c.remise_pct, 1)} %</td><td>${dateFr(c.date_effet)}</td></tr>`).join('')}
-        </table></div>` : '<p class="petite-note">Aucune condition enregistrée.</p>'}
+        <h3>Codes barres secondaires <span class="petite-note">— lot, unité consommateur, appariements (F-M1-12)</span></h3>
+        <div class="table-defilante"><table>
+          <tr><th>Code barres</th><th>Description</th><th></th></tr>
+          <tr><td><b>${esc(a.code_barres || '—')}</b></td><td>Code principal</td><td></td></tr>
+          ${(a.codes_barres_secondaires || []).map(cb => `<tr><td>${esc(cb.code_barres)}</td><td>${esc(cb.description || '')}</td>
+            <td><button class="petit danger" onclick="supprCodeBarres('${esc(cb.code_barres)}')">✕</button></td></tr>`).join('')}
+        </table></div>
+        <div class="ligne-champs" style="margin-top:8px">
+          <label class="champ">Code barres<input id="cb-nouveau" placeholder="EAN 8/13 ou UPC"></label>
+          <label class="champ">Description<input id="cb-description" placeholder="lot de 6, carton…"></label>
+          <button class="petit" id="cb-ajouter">Ajouter</button>
+        </div>
+        <div id="cb-msg"></div>
       </div>
       <div class="carte">
         <h3>Historique des modifications</h3>
-        ${(a.historique || []).length ? `<div class="table-defilante" style="max-height:260px;overflow-y:auto"><table>
+        ${(a.historique || []).length ? `<div class="table-defilante" style="max-height:300px;overflow-y:auto"><table>
           <tr><th>Date</th><th>Champ</th><th>Avant</th><th>Après</th><th>Source</th></tr>
           ${a.historique.map(h => `<tr><td>${dateFr(h.date_modif)}</td><td>${esc(h.champ)}</td><td>${esc(h.ancienne_valeur ?? '')}</td><td>${esc(h.nouvelle_valeur ?? '')}</td><td><span class="badge ${h.source === 'dossier' ? 'orange' : 'gris'}">${esc(h.source)}</span></td></tr>`).join('')}
         </table></div>` : '<p class="petite-note">Aucune modification tracée.</p>'}
@@ -364,6 +504,101 @@ async function vueFicheArticle(page, args) {
       if (nouveau) naviguer('#/article/' + encodeURIComponent(val('fa-code')));
     } catch (e) { message('fa-msg', 'erreur', e.message); }
   };
+
+  if (nouveau) return;
+
+  /* --------- Fournisseurs de l'article : comparaison, principal, rattachement --------- */
+  async function chargerComparaison() {
+    const zone = document.getElementById('fa-comparaison');
+    const r = await api(`/referentiels/articles/${encodeURIComponent(code)}/comparaison-fournisseurs`);
+    if (!r.comparaison.length) {
+      zone.innerHTML = '<p class="petite-note">Aucun fournisseur rattaché. Utilisez le formulaire ci-dessous : le premier rattaché devient automatiquement le fournisseur principal.</p>';
+      return;
+    }
+    const meilleur = r.comparaison.find(c => c.prix_net_xof !== null);
+    zone.innerHTML = `<div class="table-defilante"><table>
+      <tr><th>Fournisseur</th><th>Pays</th><th class="num">Prix</th><th class="num">Remise</th><th class="num">Prix net</th>
+      <th class="num">Équivalent F CFA</th><th>Incoterm</th><th>Date d'effet</th><th>Principal</th><th></th></tr>
+      ${r.comparaison.map(c => `<tr ${meilleur && c.id === meilleur.id ? 'style="background:var(--vert-ok-fond)"' : ''}>
+        <td><b>${esc(c.fournisseur_code)}</b><br><span class="petite-note">${esc(c.fournisseur_nom)}</span></td>
+        <td>${esc(c.pays || '')}</td>
+        <td class="num">${fmt(c.prix_achat, 4)} ${esc(c.devise)}</td>
+        <td class="num">${fmt(c.remise_pct, 1)} %</td>
+        <td class="num">${fmt(c.prix_net_devise, 4)} ${esc(c.devise)}</td>
+        <td class="num">${c.prix_net_xof !== null ? `<b>${fcfa(c.prix_net_xof)}</b>${meilleur && c.id === meilleur.id ? ' <span class="badge vert">meilleur prix</span>' : ''}` : '<span class="badge orange" title="Saisir le cours de la devise dans Administration > Taux de change">cours ' + esc(c.devise) + ' inconnu</span>'}</td>
+        <td>${esc(c.incoterm || '')}</td>
+        <td>${dateFr(c.date_effet)}</td>
+        <td>${c.principal ? '<span class="badge vert">principal</span>' : `<button class="petit secondaire" onclick="definirPrincipal('${esc(c.fournisseur_code)}')">Définir principal</button>`}</td>
+        <td><button class="petit danger" onclick="supprCondition(${c.id})" title="Supprimer cette condition">✕</button></td>
+      </tr>`).join('')}
+    </table></div>`;
+  }
+  window.definirPrincipal = async fc => {
+    try {
+      await api(`/referentiels/articles/${encodeURIComponent(code)}/fournisseur-principal`, { method: 'POST', body: { fournisseur_code: fc } });
+      message('ca-msg', 'ok', `${fc} est désormais le fournisseur principal.`);
+      chargerComparaison();
+    } catch (e) { message('ca-msg', 'erreur', e.message); }
+  };
+  window.supprCondition = async cid => {
+    await api(`/referentiels/conditions-achat/${cid}`, { method: 'DELETE' });
+    chargerComparaison();
+  };
+  document.getElementById('ca-ajouter').onclick = async () => {
+    try {
+      await api('/referentiels/conditions-achat', {
+        method: 'POST',
+        body: { fournisseur_code: val('ca-fournisseur'), article_code: code, prix_achat: val('ca-prix'), devise: val('ca-devise').toUpperCase() || 'XOF', remise_pct: val('ca-remise'), incoterm: val('ca-incoterm').toUpperCase(), date_effet: val('ca-date') || null }
+      });
+      message('ca-msg', 'ok', 'Fournisseur rattaché avec sa condition d\'achat.');
+      document.getElementById('ca-prix').value = '';
+      chargerComparaison();
+    } catch (e) { message('ca-msg', 'erreur', e.message); }
+  };
+  // Création rapide d'un fournisseur sans quitter la fiche
+  document.getElementById('ca-nouveau-fournisseur').onclick = () => {
+    document.getElementById('ca-nouveau-zone').innerHTML = `
+      <div class="carte" style="background:var(--vert-clair)">
+        <div class="ligne-champs">
+          <label class="champ">Code *<input id="nf-code" style="width:110px"></label>
+          <label class="champ">Nom *<input id="nf-nom" style="min-width:200px"></label>
+          <label class="champ">Pays<input id="nf-pays" maxlength="2" style="width:60px"></label>
+          <label class="champ">Devise<input id="nf-devise" value="XOF" style="width:70px"></label>
+          <button class="petit" id="nf-creer">Créer et sélectionner</button>
+        </div>
+      </div>`;
+    document.getElementById('nf-creer').onclick = async () => {
+      try {
+        await api('/referentiels/fournisseurs', {
+          method: 'POST',
+          body: { code: val('nf-code'), nom: val('nf-nom'), pays: val('nf-pays').toUpperCase(), devise: val('nf-devise').toUpperCase() || 'XOF' }
+        });
+        const select = document.getElementById('ca-fournisseur');
+        const codeF = val('nf-code').toUpperCase();
+        select.insertAdjacentHTML('beforeend', `<option value="${esc(codeF)}">${esc(codeF)} — ${esc(val('nf-nom'))}</option>`);
+        select.value = codeF;
+        document.getElementById('ca-devise').value = val('nf-devise').toUpperCase() || 'XOF';
+        document.getElementById('ca-nouveau-zone').innerHTML = '';
+        message('ca-msg', 'ok', `Fournisseur ${codeF} créé et sélectionné : saisissez le prix pour le rattacher.`);
+      } catch (e) { message('ca-msg', 'erreur', e.message); }
+    };
+  };
+
+  /* --------- Codes barres secondaires --------- */
+  window.supprCodeBarres = async cb => {
+    await api(`/referentiels/articles/${encodeURIComponent(code)}/codes-barres/${encodeURIComponent(cb)}`, { method: 'DELETE' });
+    rendre();
+  };
+  document.getElementById('cb-ajouter').onclick = async () => {
+    try {
+      await api(`/referentiels/articles/${encodeURIComponent(code)}/codes-barres`, {
+        method: 'POST', body: { code_barres: val('cb-nouveau'), description: val('cb-description') }
+      });
+      rendre();
+    } catch (e) { message('cb-msg', 'erreur', e.message); }
+  };
+
+  await chargerComparaison();
 }
 
 /* ---------------------------------- Douane ---------------------------------- */
