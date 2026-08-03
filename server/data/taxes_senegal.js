@@ -26,10 +26,11 @@ const CODES_TAXES = [
   ['PCS', 'Prélèvement communautaire de solidarité UEMOA', 3, 0.8, false, 'VD', 'cout'],
   ['PCC', 'Prélèvement communautaire CEDEAO', 4, 0.5, false, 'VD', 'cout'],
   ['COSEC', 'Redevance COSEC (importations par voie maritime)', 5, 0.4, false, 'VD', 'cout'],
-  ['TCI', 'Taxe conjoncturelle à l’importation (produits agricoles ciblés)', 6, 0, false, 'VD', 'cout'],
-  ['ACC', 'Droit d’accise (taux selon le produit, voir règles)', 7, 0, false, 'VD+DD+RS', 'cout'],
-  ['TVA', 'TVA à l’importation', 8, 18, false, 'VD+DD+RS+PCS+PCC+COSEC+TCI+ACC', 'creance'],
-  ['AIB', 'Acompte d’impôt sur le bénéfice (précompte à l’importation)', 9, 3, false, 'VD', 'creance']
+  ['PROMAD', 'Prélèvement de soutien à la modernisation de l’administration des douanes', 6, 1, false, 'VD', 'cout'],
+  ['TCI', 'Taxe conjoncturelle à l’importation (produits agricoles ciblés)', 7, 0, false, 'VD', 'cout'],
+  ['ACC', 'Droit d’accise (taux selon le produit, voir règles)', 8, 0, false, 'VD+DD+RS', 'cout'],
+  ['TVA', 'TVA à l’importation', 9, 18, false, 'VD+DD+RS+PCS+PCC+COSEC+PROMAD+TCI+ACC', 'creance'],
+  ['AIB', 'Acompte d’impôt sur le bénéfice (précompte à l’importation)', 10, 3, false, 'VD', 'creance']
 ];
 
 // [préfixe de position, origine ('' = toutes), code taxe, taux appliqué %, commentaire]

@@ -637,16 +637,19 @@ async function seedFiscalite() {
          VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (code) DO NOTHING`,
         [code, libelle, ordre, taux, depuisPosition, base, traitement]);
     }
-    // Bases historiques : y insérer la TCI uniquement si le paramétrage n'a pas été touché
+    // Bases historiques : enrichir la base de la TVA (TCI puis PROMAD) uniquement
+    // si le paramétrage porte encore sa valeur d'origine, jamais s'il a été modifié
     await q(
       `UPDATE codes_taxes SET base_composants='VD+DD+RS+PCS+PCC+COSEC+TCI+ACC'
         WHERE code='TVA' AND base_composants='VD+DD+RS+PCS+PCC+COSEC+ACC'`);
     await q(
-      `UPDATE codes_taxes SET ordre=7 WHERE code='ACC' AND ordre=6`);
-    await q(
-      `UPDATE codes_taxes SET ordre=8 WHERE code='TVA' AND ordre=7`);
-    await q(
-      `UPDATE codes_taxes SET ordre=9 WHERE code='AIB' AND ordre=8`);
+      `UPDATE codes_taxes SET base_composants='VD+DD+RS+PCS+PCC+COSEC+PROMAD+TCI+ACC'
+        WHERE code='TVA' AND base_composants='VD+DD+RS+PCS+PCC+COSEC+TCI+ACC'`);
+    // Réordonnancement de la cascade pour insérer PROMAD après COSEC
+    await q(`UPDATE codes_taxes SET ordre=7 WHERE code='TCI' AND ordre=6`);
+    await q(`UPDATE codes_taxes SET ordre=8 WHERE code='ACC' AND ordre IN (6,7)`);
+    await q(`UPDATE codes_taxes SET ordre=9 WHERE code='TVA' AND ordre IN (7,8)`);
+    await q(`UPDATE codes_taxes SET ordre=10 WHERE code='AIB' AND ordre IN (8,9)`);
     for (const [prefixe, origine, codeTaxe, taux, commentaire] of REGLES) {
       const { rows } = await q(
         `SELECT 1 FROM exonerations WHERE position_prefixe=$1 AND origine=$2 AND code_taxe=$3`,
