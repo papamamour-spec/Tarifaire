@@ -373,6 +373,48 @@ test('M11-09 : export complet des données', { skip: !actif }, async () => {
   assert.ok(Object.keys(exportation.tables).length >= 25);
 });
 
+test('référentiel : modification en masse, suppressions gardées', { skip: !actif }, async () => {
+  // Modification en masse : reclassement de famille + sensibilité
+  await api('/referentiels/familles', { method: 'POST', body: { code: 'NOUVELLE', libelle: 'Nouvelle famille' } });
+  const lot = await api('/referentiels/articles-modifier-lot', {
+    method: 'POST',
+    body: { codes: ['T001', 'T002'], champs: { famille_code: 'NOUVELLE', sensibilite_prix: 'elevee' } }
+  });
+  assert.equal(lot.modifies, 2);
+  const fiche = await api('/referentiels/articles/T001');
+  assert.equal(fiche.famille_code, 'NOUVELLE');
+  assert.equal(fiche.sensibilite_prix, 'elevee');
+  // Le changement est tracé dans l'historique
+  assert.ok(fiche.historique.some(h => h.champ === 'famille_code' && h.source === 'modification_lot'));
+
+  // Suppression d'une famille avec articles : refusée
+  await assert.rejects(
+    api('/referentiels/familles/NOUVELLE', { method: 'DELETE' }),
+    e => e.statut === 409
+  );
+  // Après reclassement, la suppression passe
+  await api('/referentiels/articles-modifier-lot', {
+    method: 'POST', body: { codes: ['T001', 'T002'], champs: { famille_code: 'EPICERIE' } }
+  });
+  await api('/referentiels/familles/NOUVELLE', { method: 'DELETE' });
+
+  // Suppression d'un article utilisé dans un dossier : refusée avec le détail des usages
+  await assert.rejects(
+    api('/referentiels/articles/T001', { method: 'DELETE' }),
+    e => e.statut === 409 && e.data.usages && e.data.usages.dossier_lignes > 0
+  );
+  // Un article jamais utilisé se supprime
+  await api('/referentiels/articles', { method: 'POST', body: { code_interne: 'TEMP1', libelle: 'Article temporaire' } });
+  await api('/referentiels/articles/TEMP1', { method: 'DELETE' });
+  await assert.rejects(api('/referentiels/articles/TEMP1'), e => e.statut === 404);
+
+  // Suppression d'un fournisseur référencé : refusée
+  await assert.rejects(
+    api('/referentiels/fournisseurs/TEST', { method: 'DELETE' }),
+    e => e.statut === 409
+  );
+});
+
 test('lot 4 : documentation API disponible sans jeton', { skip: !actif }, async () => {
   const rep = await fetch(`${B}/docs`);
   assert.equal(rep.ok, true);

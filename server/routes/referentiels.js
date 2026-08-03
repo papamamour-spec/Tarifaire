@@ -25,6 +25,25 @@ r.post('/familles', exiger('controle'), async (req, res) => {
   res.json({ ok: true });
 });
 
+/* Suppression d'une famille : refusée si des articles ou des sous-familles y sont rattachés. */
+r.delete('/familles/:code', exiger('controle'), async (req, res) => {
+  const code = req.params.code;
+  const [{ rows: arts }, { rows: enfants }, { rows: pols }] = await Promise.all([
+    query('SELECT COUNT(*)::int AS n FROM articles WHERE famille_code=$1', [code]),
+    query('SELECT COUNT(*)::int AS n FROM familles WHERE parent_code=$1', [code]),
+    query('SELECT COUNT(*)::int AS n FROM politiques_tarifaires WHERE famille_code=$1', [code])
+  ]);
+  if (arts[0].n || enfants[0].n) {
+    return res.status(409).json({
+      erreur: `Suppression refusée : ${arts[0].n} article(s) et ${enfants[0].n} sous-famille(s) rattachés. Reclassez-les d'abord (modification en masse depuis la liste des articles).`
+    });
+  }
+  if (pols[0].n) await query('DELETE FROM politiques_tarifaires WHERE famille_code=$1', [code]);
+  await query('DELETE FROM familles WHERE code=$1', [code]);
+  await auditer(req, 'suppression', 'famille', code);
+  res.json({ ok: true });
+});
+
 /* ------------------------- Fournisseurs ------------------------- */
 r.get('/fournisseurs', async (req, res) => {
   const { rows } = await query('SELECT * FROM fournisseurs ORDER BY code');
@@ -40,6 +59,24 @@ r.post('/fournisseurs', exiger('acheteur'), async (req, res) => {
      ON CONFLICT (code) DO UPDATE SET nom=$2, pays=$3, devise=$4, incoterm_defaut=$5, contact=$6, actif=COALESCE($7,TRUE)`,
     [code.toUpperCase(), nom, pays || null, devise || 'XOF', incoterm_defaut || null, contact || null, actif]);
   await auditer(req, 'enregistrement', 'fournisseur', code);
+  res.json({ ok: true });
+});
+
+/* Suppression d'un fournisseur : refusée s'il est référencé (articles, conditions, dossiers). */
+r.delete('/fournisseurs/:code', exiger('acheteur'), async (req, res) => {
+  const code = req.params.code;
+  const [{ rows: arts }, { rows: conds }, { rows: doss }] = await Promise.all([
+    query('SELECT COUNT(*)::int AS n FROM articles WHERE fournisseur_code=$1', [code]),
+    query('SELECT COUNT(*)::int AS n FROM conditions_achat WHERE fournisseur_code=$1', [code]),
+    query('SELECT COUNT(*)::int AS n FROM dossiers WHERE fournisseur_code=$1', [code])
+  ]);
+  if (arts[0].n || conds[0].n || doss[0].n) {
+    return res.status(409).json({
+      erreur: `Suppression refusée : ${arts[0].n} article(s), ${conds[0].n} condition(s) d'achat et ${doss[0].n} dossier(s) référencent ce fournisseur. Désactivez-le plutôt (case Actif).`
+    });
+  }
+  await query('DELETE FROM fournisseurs WHERE code=$1', [code]);
+  await auditer(req, 'suppression', 'fournisseur', code);
   res.json({ ok: true });
 });
 
@@ -358,6 +395,59 @@ r.post('/articles-import/csv', exiger('acheteur'), async (req, res) => {
   }
   await auditer(req, 'import', 'articles', null, `${rapport.crees} créés, ${rapport.modifies} modifiés, ${rapport.rejets.length} rejets`);
   res.json({ previsualisation: false, ...rapport });
+});
+
+/*
+ * Modification en masse d'articles : famille, statut, TVA, marge cible, sensibilité,
+ * mode d'arbitrage. Chaque changement est tracé dans l'historique de la fiche.
+ * Corps : { codes: [...], champs: { famille_code?, statut?, taux_tva_vente?, marge_cible?, sensibilite_prix?, mode_arbitrage? } }
+ */
+const CHAMPS_LOT = ['famille_code', 'statut', 'taux_tva_vente', 'marge_cible', 'sensibilite_prix', 'mode_arbitrage', 'role_assortiment', 'origine'];
+r.post('/articles-modifier-lot', exiger('acheteur'), async (req, res) => {
+  const { codes, champs } = req.body || {};
+  if (!Array.isArray(codes) || !codes.length) return res.status(400).json({ erreur: 'Liste de codes articles requise' });
+  const aModifier = Object.entries(champs || {})
+    .filter(([cle, valeur]) => CHAMPS_LOT.includes(cle) && valeur !== undefined && valeur !== '');
+  if (!aModifier.length) return res.status(400).json({ erreur: `Aucun champ à modifier. Champs admis : ${CHAMPS_LOT.join(', ')}` });
+  if (champs.famille_code) {
+    await query(`INSERT INTO familles (code, libelle) VALUES ($1,$1) ON CONFLICT DO NOTHING`, [champs.famille_code.toUpperCase()]);
+  }
+  let modifies = 0;
+  for (const code of codes.slice(0, 1000)) {
+    const donnees = {};
+    for (const [cle, valeur] of aModifier) {
+      donnees[cle] = CHAMPS_NUM.has(cle) ? num(valeur) : (cle === 'famille_code' || cle === 'origine' ? String(valeur).toUpperCase() : valeur);
+    }
+    const action = await upsertArticle(req, code, donnees, 'modification_lot').catch(() => null);
+    if (action === 'modifie') modifies++;
+  }
+  await auditer(req, 'modification_lot', 'articles', null,
+    `${modifies} article(s) : ${aModifier.map(([cle, valeur]) => `${cle}=${valeur}`).join(', ')}`);
+  res.json({ ok: true, modifies });
+});
+
+/*
+ * Suppression d'un article : uniquement s'il n'est utilisé nulle part (le CDC interdit
+ * la suppression de données transactionnelles) ; sinon, passer le statut à « arrêté ».
+ */
+r.delete('/articles/:code', exiger('acheteur'), async (req, res) => {
+  const code = req.params.code;
+  const usages = {};
+  for (const [table, colonne] of [['dossier_lignes', 'article_code'], ['tarifs', 'article_code'],
+    ['releves_concurrents', 'article_code'], ['resultats_couts', 'article_code'], ['ventes', 'article_code']]) {
+    const { rows } = await query(`SELECT COUNT(*)::int AS n FROM ${table} WHERE ${colonne}=$1`, [code]);
+    if (rows[0].n) usages[table] = rows[0].n;
+  }
+  if (Object.keys(usages).length) {
+    return res.status(409).json({
+      erreur: `Suppression refusée : l'article est utilisé (${Object.entries(usages).map(([t, n]) => `${t} : ${n}`).join(', ')}). Passez son statut à « arrêté » pour le retirer de l'assortiment sans perdre l'historique.`,
+      usages
+    });
+  }
+  await query('DELETE FROM conditions_achat WHERE article_code=$1', [code]);
+  await query('DELETE FROM articles WHERE code_interne=$1', [code]);
+  await auditer(req, 'suppression', 'article', code);
+  res.json({ ok: true });
 });
 
 /* Détection de doublons de codes barres et de libellés proches (F-M1-11) */
