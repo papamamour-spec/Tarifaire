@@ -8,16 +8,65 @@ const bcrypt = require('bcryptjs');
 
 const connectionString = process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/tarifaire';
 
-const useSsl = /railway|render|amazonaws|azure|neon|supabase/.test(connectionString) || process.env.PGSSL === '1';
+/*
+ * Détermination du TLS :
+ * - PGSSL=1 force le TLS, PGSSL=0 le désactive ;
+ * - sslmode=disable/require dans l'URL est respecté ;
+ * - les réseaux privés (railway.internal, localhost) ne supportent pas le TLS ;
+ * - en cas d'erreur SSL à la connexion, on bascule automatiquement et on réessaie.
+ */
+function sslInitial() {
+  if (process.env.PGSSL === '1') return true;
+  if (process.env.PGSSL === '0') return false;
+  if (/sslmode=disable/.test(connectionString)) return false;
+  if (/sslmode=(require|prefer|verify)/.test(connectionString)) return true;
+  try {
+    const hote = new URL(connectionString).hostname;
+    if (hote === 'localhost' || hote === '127.0.0.1' || hote.endsWith('.railway.internal') || hote.endsWith('.internal')) return false;
+  } catch { /* URL non analysable : essai sans TLS d'abord */ }
+  return false;
+}
 
-const pool = new Pool({
-  connectionString,
-  ssl: useSsl ? { rejectUnauthorized: false } : false,
-  max: 10
-});
+let sslActif = sslInitial();
+let pool = creerPool();
+
+function creerPool() {
+  return new Pool({
+    connectionString,
+    ssl: sslActif ? { rejectUnauthorized: false } : false,
+    max: 10
+  });
+}
 
 async function query(text, params) {
   return pool.query(text, params);
+}
+
+const attendre = ms => new Promise(r => setTimeout(r, ms));
+
+/*
+ * Attend que la base soit joignable (la base Railway peut être encore en cours de
+ * provisionnement au premier démarrage) et gère la bascule TLS automatique.
+ */
+async function attendreBase() {
+  const maxTentatives = 30;
+  for (let tentative = 1; ; tentative++) {
+    try {
+      await pool.query('SELECT 1');
+      return;
+    } catch (e) {
+      if (/ssl|tls/i.test(e.message || '')) {
+        sslActif = !sslActif;
+        console.warn(`[base] erreur SSL (« ${e.message} ») : nouvel essai avec TLS ${sslActif ? 'activé' : 'désactivé'}`);
+        try { await pool.end(); } catch { /* sans importance */ }
+        pool = creerPool();
+        continue;
+      }
+      if (tentative >= maxTentatives) throw e;
+      console.warn(`[base] injoignable (tentative ${tentative}/${maxTentatives}) : ${e.message} — nouvel essai dans 3 s`);
+      await attendre(3000);
+    }
+  }
 }
 
 const SCHEMA = `
@@ -427,8 +476,13 @@ async function seed() {
 }
 
 async function init() {
+  if (!process.env.DATABASE_URL) {
+    console.warn('[base] DATABASE_URL non définie : tentative sur postgres://localhost:5432/tarifaire. ' +
+      'Sur Railway, ajoutez un service PostgreSQL et la variable DATABASE_URL=${{Postgres.DATABASE_URL}}.');
+  }
+  await attendreBase();
   await migrate();
   await seed();
 }
 
-module.exports = { pool, query, init };
+module.exports = { query, init };
