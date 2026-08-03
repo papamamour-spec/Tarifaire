@@ -145,14 +145,24 @@ r.get('/indices', async (req, res) => {
        JOIN derniers_releves dr ON dr.article_code=np.article_code
        LEFT JOIN enseignes_concurrentes e ON e.code=dr.enseigne_code
       ORDER BY a.code_interne, dr.enseigne_code`, [fmt]);
+  // Pondération par le poids de chaque référence dans le chiffre d'affaires (F-M7-23)
+  const { rows: ca } = await query(
+    `SELECT article_code, SUM(ca_ttc) AS ca FROM ventes
+      WHERE date_vente > CURRENT_DATE - 90 GROUP BY article_code`);
+  const caParArticle = new Map(ca.map(x => [x.article_code, Number(x.ca)]));
   const parEnseigne = {};
   for (const x of rows) {
     const k = x.enseigne_code || '?';
-    (parEnseigne[k] = parEnseigne[k] || { enseigne: x.enseigne_nom || k, indices: [] }).indices.push(Number(x.indice));
+    const e = parEnseigne[k] = parEnseigne[k] || { enseigne: x.enseigne_nom || k, indices: [], sommePonderee: 0, poids: 0 };
+    e.indices.push(Number(x.indice));
+    const p = caParArticle.get(x.code_interne) || 0;
+    e.sommePonderee += Number(x.indice) * p;
+    e.poids += p;
   }
   const syntheses = Object.entries(parEnseigne).map(([code, v]) => ({
     enseigne_code: code, enseigne: v.enseigne, nb_references: v.indices.length,
-    indice_moyen: round(v.indices.reduce((s, i) => s + i, 0) / v.indices.length, 1)
+    indice_moyen: round(v.indices.reduce((s, i) => s + i, 0) / v.indices.length, 1),
+    indice_pondere_ca: v.poids > 0 ? round(v.sommePonderee / v.poids, 1) : null
   }));
   res.json({ format: fmt, details: rows, syntheses });
 });

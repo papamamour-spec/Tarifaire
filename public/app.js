@@ -423,9 +423,11 @@ async function vueFicheArticle(page, args) {
       <h3>Douane &amp; fiscalité</h3>
       <div class="ligne-champs">
         ${champ('fa-position', 'Position tarifaire (10 chiffres)', a.position_tarifaire)}
+        <button class="secondaire petit" id="fa-suggerer" title="Propose des positions d'après le libellé de l'article">Suggérer d'après le libellé</button>
         ${champ('fa-origine', 'Origine (code pays)', a.origine, 'text', 'maxlength="2" style="width:70px"')}
         ${champ('fa-tva', 'TVA à la vente (%)', a.taux_tva_vente ?? 18, 'number', 'step="0.1"')}
       </div>
+      <div id="fa-suggestions"></div>
       ${a.taux_effectif_constate ? `<p>Taux effectif de droits et taxes constaté sur dossiers : <b>${fmt(a.taux_effectif_constate, 1)} %</b></p>` : ''}
     </div>
     <div class="carte">
@@ -481,6 +483,37 @@ async function vueFicheArticle(page, args) {
           <tr><th>Date</th><th>Champ</th><th>Avant</th><th>Après</th><th>Source</th></tr>
           ${a.historique.map(h => `<tr><td>${dateFr(h.date_modif)}</td><td>${esc(h.champ)}</td><td>${esc(h.ancienne_valeur ?? '')}</td><td>${esc(h.nouvelle_valeur ?? '')}</td><td><span class="badge ${h.source === 'dossier' ? 'orange' : 'gris'}">${esc(h.source)}</span></td></tr>`).join('')}
         </table></div>` : '<p class="petite-note">Aucune modification tracée.</p>'}
+      </div>
+    </div>
+    <div class="deux-colonnes">
+      <div class="carte">
+        <h3>Photos et fiches techniques <span class="petite-note">(F-M1-13)</span></h3>
+        <div id="fa-photos" class="ligne-champs"></div>
+        <div class="actions-page"><button class="petit secondaire" id="fa-photo-ajouter">⬆ Ajouter une photo ou un document</button></div>
+      </div>
+      <div class="carte">
+        <h3>Articles liés <span class="petite-note">— lot, unité consommateur, remplacement, variante (F-M1-12, F-M1-15)</span></h3>
+        <div class="table-defilante"><table>
+          <tr><th>Type</th><th>Article</th><th>Précision</th><th></th></tr>
+          ${(a.liens || []).map(l => `<tr>
+            <td><span class="badge bleu">${esc(l.type_lien)}</span> ${l.sens === 'entrant' ? '<span class="petite-note">(lié depuis)</span>' : ''}</td>
+            <td><a href="#/article/${encodeURIComponent(l.sens === 'entrant' ? l.article_code : l.article_lie_code)}">${esc(l.sens === 'entrant' ? l.article_code : l.article_lie_code)}</a><br>
+              <span class="petite-note">${esc(l.article_lie_libelle || '')}</span></td>
+            <td>${esc(l.description || '')}</td>
+            <td>${l.sens === 'sortant' ? `<button class="petit danger" onclick="supprLien(${l.id})">✕</button>` : ''}</td>
+          </tr>`).join('') || '<tr><td colspan="4">Aucun article lié.</td></tr>'}
+        </table></div>
+        <div class="ligne-champs" style="margin-top:8px">
+          <label class="champ">Type<select id="li-type">
+            <option value="variante">Variante (taille, couleur, parfum)</option>
+            <option value="lot">Lot</option>
+            <option value="uvc">Unité de vente consommateur</option>
+            <option value="remplacement">Article de remplacement</option></select></label>
+          <label class="champ">Code article lié<input id="li-code"></label>
+          <label class="champ">Précision<input id="li-description" placeholder="ex. parfum vanille, lot de 6"></label>
+          <button class="petit" id="li-ajouter">Lier</button>
+        </div>
+        <div id="li-msg"></div>
       </div>
     </div>` : ''}`;
 
@@ -584,6 +617,91 @@ async function vueFicheArticle(page, args) {
     };
   };
 
+  /* --------- Suggestion de position tarifaire (F-M1-14) --------- */
+  document.getElementById('fa-suggerer').onclick = async () => {
+    const libelle = val('fa-libelle');
+    if (!libelle) { message('fa-suggestions', 'erreur', 'Saisissez d\'abord le libellé.'); return; }
+    const suggestions = await api('/referentiels/suggestion-position?libelle=' + encodeURIComponent(libelle));
+    if (!suggestions.length) {
+      message('fa-suggestions', 'info', 'Aucune position proche trouvée dans la nomenclature. Enrichissez la nomenclature dans Douane & fiscalité.');
+      return;
+    }
+    document.getElementById('fa-suggestions').innerHTML = `
+      <div class="message info">Positions proches du libellé (cliquer pour retenir) :<br>
+      ${suggestions.map(s => `<button class="petit secondaire" style="margin:3px" onclick="retenirPosition('${esc(s.code)}')">
+        ${esc(s.code)} — ${esc(s.libelle)} (DD ${fmt(s.taux_dd, 1)} %${s.pertinence ? ', pertinence ' + fmt(Number(s.pertinence) * 100, 0) + ' %' : ''})</button>`).join('')}</div>`;
+  };
+  window.retenirPosition = codePos => {
+    document.getElementById('fa-position').value = codePos;
+    document.getElementById('fa-suggestions').innerHTML = '';
+  };
+
+  /* --------- Photos (F-M1-13) : chargées avec le jeton puis affichées en aperçu --------- */
+  async function chargerPhotos() {
+    const zone = document.getElementById('fa-photos');
+    const photos = a.photos || [];
+    if (!photos.length) { zone.innerHTML = '<p class="petite-note">Aucune photo ni fiche technique.</p>'; return; }
+    zone.innerHTML = '';
+    for (const p of photos) {
+      const bloc = document.createElement('div');
+      bloc.style.cssText = 'text-align:center;max-width:140px';
+      if (p.type_mime.startsWith('image/')) {
+        const rep = await fetch(`/api/referentiels/photos/${p.id}`, { headers: { Authorization: 'Bearer ' + etat.token } });
+        const url = URL.createObjectURL(await rep.blob());
+        bloc.innerHTML = `<img src="${url}" style="max-width:130px;max-height:130px;border-radius:6px;border:1px solid var(--bord)"><br>`;
+      } else {
+        bloc.innerHTML = `<span style="font-size:34px">📄</span><br>`;
+      }
+      bloc.innerHTML += `<span class="petite-note">${esc(p.nom_fichier)}</span><br>
+        <button class="petit secondaire" onclick="telecharger('/referentiels/photos/${p.id}','${esc(p.nom_fichier)}')">Ouvrir</button>
+        <button class="petit danger" onclick="supprPhoto(${p.id})">✕</button>`;
+      zone.appendChild(bloc);
+    }
+  }
+  window.supprPhoto = async pid => {
+    await api(`/referentiels/photos/${pid}`, { method: 'DELETE' });
+    rendre();
+  };
+  window.telecharger = telecharger;
+  document.getElementById('fa-photo-ajouter').onclick = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.jpg,.jpeg,.png,.webp,.pdf';
+    input.onchange = async () => {
+      const fichier = input.files[0];
+      if (!fichier) return;
+      if (fichier.size > 5 * 1024 * 1024) { alert('Fichier trop volumineux (5 Mo maximum).'); return; }
+      const rep = await fetch(`/api/referentiels/articles/${encodeURIComponent(code)}/photos`, {
+        method: 'PUT',
+        headers: {
+          Authorization: 'Bearer ' + etat.token,
+          'Content-Type': fichier.type || 'application/octet-stream',
+          'X-Nom-Fichier': encodeURIComponent(fichier.name)
+        },
+        body: fichier
+      });
+      if (rep.ok) rendre();
+      else alert('Échec du téléversement : ' + ((await rep.json().catch(() => ({}))).erreur || rep.status));
+    };
+    input.click();
+  };
+  chargerPhotos();
+
+  /* --------- Articles liés (F-M1-12, F-M1-15) --------- */
+  window.supprLien = async lid => {
+    await api(`/referentiels/liens/${lid}`, { method: 'DELETE' });
+    rendre();
+  };
+  document.getElementById('li-ajouter').onclick = async () => {
+    try {
+      await api(`/referentiels/articles/${encodeURIComponent(code)}/liens`, {
+        method: 'POST',
+        body: { article_lie_code: val('li-code'), type_lien: val('li-type'), description: val('li-description') }
+      });
+      rendre();
+    } catch (e) { message('li-msg', 'erreur', e.message); }
+  };
+
   /* --------- Codes barres secondaires --------- */
   window.supprCodeBarres = async cb => {
     await api(`/referentiels/articles/${encodeURIComponent(code)}/codes-barres/${encodeURIComponent(cb)}`, { method: 'DELETE' });
@@ -626,13 +744,14 @@ async function vueDouane(page) {
             <label class="champ">Valeur en douane (F CFA)<input id="s-vd" type="number" value="1000000"></label>
             <label class="champ">Position tarifaire<input id="s-pos" placeholder="10 chiffres"></label>
             <label class="champ">Origine (code pays)<input id="s-ori" maxlength="2" style="width:70px"></label>
+            <label class="champ">À la date du<input id="s-date" type="date" title="Recalcul aux taux en vigueur à cette date"></label>
             <button id="s-lancer">Simuler</button>
           </div>
           <div id="s-resultat"></div>
         </div>`;
       document.getElementById('s-lancer').onclick = async () => {
         try {
-          const r = await api('/douane/simulation', { method: 'POST', body: { valeur_en_douane: val('s-vd'), position_tarifaire: val('s-pos'), origine: val('s-ori') } });
+          const r = await api('/douane/simulation', { method: 'POST', body: { valeur_en_douane: val('s-vd'), position_tarifaire: val('s-pos'), origine: val('s-ori'), date: val('s-date') || null } });
           document.getElementById('s-resultat').innerHTML = `
             ${r.position ? `<p>Position <b>${esc(r.position.code)}</b> — ${esc(r.position.libelle)} (droit de douane ${fmt(r.position.taux_dd, 1)} %)</p>` : '<p class="message info">Position inconnue du référentiel : droit de douane à 0 %, seules les taxes à taux fixe sont calculées.</p>'}
             <div class="table-defilante"><table>
@@ -947,9 +1066,11 @@ async function vueDossierDetail(page, args) {
       c.innerHTML = `
         <div class="actions-page">
           <button id="de-liquider">Liquider (simulation)</button>
+          <button class="secondaire" id="de-ecart" title="Mesure la qualité de la simulation face aux montants retenus (F-M2-05)">Écart simulé / réel</button>
           <span class="petite-note">La simulation reproduit le calcul de la Douane. Les montants réels saisis priment toujours.</span>
         </div>
         <div id="de-msg"></div>
+        <div id="de-ecart-zone"></div>
         ${d.declaration.map(a => {
           const taxes = a.taxes || [];
           const totalCout = taxes.reduce((s, t) => s + Number(t.montant), 0);
@@ -994,6 +1115,19 @@ async function vueDossierDetail(page, args) {
         await api(`/dossiers/${id}/declaration/${daId}/taxes-reelles`, { method: 'POST', body: { taxes } });
         message('de-msg', 'ok', 'Montants réels enregistrés : ils priment désormais sur la simulation.');
         setTimeout(rendre, 900);
+      };
+      document.getElementById('de-ecart').onclick = async () => {
+        const ecarts = await api(`/dossiers/${id}/ecart-liquidation`);
+        document.getElementById('de-ecart-zone').innerHTML = `
+          <div class="carte"><h3>Écart entre liquidation simulée et montants retenus (F-M2-05)</h3>
+          <div class="table-defilante"><table>
+            <tr><th>Décl.</th><th>Position</th><th class="num">Total simulé</th><th class="num">Total retenu</th><th class="num">Écart</th><th class="num">Écart %</th></tr>
+            ${ecarts.map(x => `<tr><td>n°${x.rang}</td><td>${esc(x.position_tarifaire)}</td>
+              <td class="num">${fcfa(x.total_simule)}</td><td class="num">${fcfa(x.total_retenu)}</td>
+              <td class="num">${fcfa(x.ecart_total)}</td>
+              <td class="num"><span class="badge ${Math.abs(x.ecart_pct || 0) > 3 ? 'rouge' : 'vert'}">${x.ecart_pct !== null ? fmt(x.ecart_pct, 1) + ' %' : '—'}</span></td></tr>`).join('') || '<tr><td colspan="6">Aucun article de déclaration.</td></tr>'}
+          </table></div>
+          <p class="petite-note">Un écart durable signale un barème de taux à mettre à jour ou une divergence de classement tarifaire (F-M2-09).</p></div>`;
       };
       document.getElementById('de-liquider').onclick = async () => {
         try {
@@ -1072,11 +1206,55 @@ async function vueDossierDetail(page, args) {
         <div class="actions-page">
           <button id="r-calculer">Calculer le coût de revient débarqué</button>
           <button class="secondaire" id="r-reviser" title="Après ajout d'une facture tardive : recalcule et ventile l'ajustement entre stock restant et quantités vendues">Réviser (facture tardive)</button>
+          <button class="secondaire" id="r-cles" title="Mesure l'enjeu des clés multiples face au traitement usuel des ERP">Clé unique vs clés multiples</button>
+          <button class="secondaire" id="r-variation">Simuler une variation</button>
           <button class="secondaire" id="r-export">Exporter les coûts (CSV)</button>
           <button class="secondaire" id="r-ecritures">Écritures comptables (CSV)</button>
         </div>
         <div id="r-msg"></div>
+        <div id="r-outils"></div>
         <div id="r-tableau">${tableauResultats(d.resultats)}</div>`;
+      document.getElementById('r-cles').onclick = async () => {
+        try {
+          const r = await api(`/dossiers/${id}/comparaison-cles`);
+          document.getElementById('r-outils').innerHTML = `
+            <div class="carte"><h3>Enjeu des clés multiples (F-M5-11)</h3>
+            <div class="message ${r.ecart_max_pct > 3 ? 'erreur' : 'info'}">${esc(r.enjeu)}</div>
+            <div class="table-defilante"><table>
+              <tr><th>Article</th><th class="num">Unitaire clés multiples</th><th class="num">Unitaire clé unique (valeur)</th><th class="num">Écart</th></tr>
+              ${r.lignes.map(l => `<tr><td>${esc(l.article_code || l.libelle || '')}</td>
+                <td class="num"><b>${fmt(l.cout_unitaire_cles_multiples, 2)}</b></td>
+                <td class="num">${fmt(l.cout_unitaire_cle_unique, 2)}</td>
+                <td class="num"><span class="badge ${Math.abs(l.ecart_pct) > 3 ? 'rouge' : 'gris'}">${l.ecart_pct > 0 ? '+' : ''}${fmt(l.ecart_pct, 1)} %</span></td></tr>`).join('')}
+            </table></div></div>`;
+        } catch (e) { message('r-msg', 'erreur', e.message); }
+      };
+      document.getElementById('r-variation').onclick = () => {
+        document.getElementById('r-outils').innerHTML = `
+          <div class="carte"><h3>Simulation d'une variation (F-M5-12)</h3>
+          <div class="ligne-champs">
+            <label class="champ">Fret (± %)<input id="sv-fret" type="number" step="1" value="10" style="width:80px"></label>
+            <label class="champ">Cours de change (± %)<input id="sv-change" type="number" step="1" value="0" style="width:80px"></label>
+            <label class="champ">Droits et taxes (± %)<input id="sv-droits" type="number" step="1" value="0" style="width:80px"></label>
+            <button id="sv-lancer">Simuler</button>
+          </div><div id="sv-resultat"></div></div>`;
+        document.getElementById('sv-lancer').onclick = async () => {
+          try {
+            const r = await api(`/dossiers/${id}/simulation-variation`, {
+              method: 'POST',
+              body: { fret_pct: val('sv-fret'), change_pct: val('sv-change'), droits_pct: val('sv-droits') }
+            });
+            document.getElementById('sv-resultat').innerHTML = `
+              <div class="table-defilante"><table>
+                <tr><th>Article</th><th class="num">Coût unitaire actuel</th><th class="num">Coût simulé</th><th class="num">Variation</th></tr>
+                ${r.lignes.map(l => `<tr><td>${esc(l.article_code || '')}</td>
+                  <td class="num">${fmt(l.cout_unitaire_actuel, 2)}</td>
+                  <td class="num"><b>${fmt(l.cout_unitaire_simule, 2)}</b></td>
+                  <td class="num"><span class="badge ${l.variation_pct > 0 ? 'rouge' : 'vert'}">${l.variation_pct > 0 ? '+' : ''}${fmt(l.variation_pct, 1)} %</span></td></tr>`).join('')}
+              </table></div>`;
+          } catch (e) { message('r-msg', 'erreur', e.message); }
+        };
+      };
       document.getElementById('r-reviser').onclick = async () => {
         if (!d.resultats.length) { message('r-msg', 'erreur', 'Aucun calcul précédent : utilisez « Calculer » d\'abord.'); return; }
         try {
@@ -1300,6 +1478,7 @@ async function vueTarification(page) {
         <div class="actions-page">
           <button id="ta-publier" ${estDirection ? '' : 'disabled title="Rôle direction requis"'}>Publier la sélection</button>
           <button class="secondaire" id="ta-export">Exporter les tarifs publiés (CSV → ERP/caisse)</button>
+          <button class="secondaire" id="ta-etiquettes" title="Étiquettes de rayon imprimables pour les tarifs publiés (F-M8-08)">🏷 Imprimer les étiquettes</button>
         </div>
         <div id="ta-msg"></div>
         <div class="table-defilante"><table>
@@ -1329,6 +1508,32 @@ async function vueTarification(page) {
         } catch (e) { message('rg-msg', 'erreur', e.message); }
       };
       document.getElementById('ta-export').onclick = () => telecharger('/tarification/tarifs-export/csv', 'tarifs_publies.csv');
+      // Étiquettes de rayon (F-M8-08) : page imprimable générée côté client
+      document.getElementById('ta-etiquettes').onclick = async () => {
+        const publies = tarifs.filter(t => t.statut === 'publie');
+        if (!publies.length) { message('ta-msg', 'erreur', 'Aucun tarif publié à imprimer.'); return; }
+        const fen = window.open('', '_blank');
+        fen.document.write(`<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>Étiquettes de rayon</title>
+          <style>
+            body { font-family: Arial, sans-serif; margin: 8mm; }
+            .grille { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4mm; }
+            .etiquette { border: 1px solid #333; border-radius: 2mm; padding: 3mm; page-break-inside: avoid; }
+            .libelle { font-size: 11px; min-height: 26px; font-weight: bold; }
+            .prix { font-size: 26px; font-weight: 900; text-align: right; }
+            .prix small { font-size: 11px; font-weight: normal; }
+            .pied { display: flex; justify-content: space-between; font-size: 9px; color: #444; margin-top: 1mm; }
+            @media print { .noprint { display: none; } }
+          </style></head><body>
+          <p class="noprint"><button onclick="window.print()">Imprimer</button> ${publies.length} étiquette(s) — format ${new Date().toLocaleDateString('fr-FR')}</p>
+          <div class="grille">
+          ${publies.map(t => `<div class="etiquette">
+            <div class="libelle">${esc(t.article_libelle)}</div>
+            <div class="prix">${fmt(t.prix_ttc)} <small>F CFA<br>TTC</small></div>
+            <div class="pied"><span>${esc(t.article_code)} · ${esc(t.format_code)}</span><span>${esc(t.code_barres || '')}</span></div>
+          </div>`).join('')}
+          </div></body></html>`);
+        fen.document.close();
+      };
       document.getElementById('ta-publier').onclick = async () => {
         const ids = [...document.querySelectorAll('.ta-coche:checked')].map(x => Number(x.value));
         if (!ids.length) { message('ta-msg', 'erreur', 'Aucun tarif sélectionné.'); return; }
@@ -1590,7 +1795,7 @@ async function vueVeille(page) {
         document.getElementById('in-resultats').innerHTML = `
           <h2>Indice de prix par enseigne (base 100 = concurrent)</h2>
           <div class="grille kpi">
-            ${ind.syntheses.map(s => `<div class="carte"><div class="valeur ${s.indice_moyen > 102 ? 'alerte-rouge' : ''}">${fmt(s.indice_moyen, 1)}</div>
+            ${ind.syntheses.map(s => `<div class="carte"><div class="valeur ${s.indice_moyen > 102 ? 'alerte-rouge' : ''}">${fmt(s.indice_moyen, 1)}${s.indice_pondere_ca !== null ? ` <span style="font-size:14px" title="Indice pondéré par le poids de chaque référence dans le chiffre d'affaires (90 jours)">(pondéré CA : ${fmt(s.indice_pondere_ca, 1)})</span>` : ''}</div>
               <div class="libelle">${esc(s.enseigne)} — ${s.nb_references} référence(s) comparée(s)</div></div>`).join('') || '<p class="petite-note">Aucune comparaison possible : publiez des tarifs et enregistrez des relevés appariés.</p>'}
           </div>
           <h2>Alertes d'écart concurrentiel (&gt; ${val('in-seuil')} %)</h2>
@@ -1671,6 +1876,9 @@ async function vueAdmin(page) {
       try { params = await api('/admin/parametres'); }
       catch { c.innerHTML = '<div class="message erreur">Accès réservé aux administrateurs.</div>'; return; }
       c.innerHTML = `
+        <div class="actions-page">
+          <button class="secondaire" id="pa-export-complet" title="Réversibilité (F-M11-09) : toutes les données dans un format ouvert">⬇ Export complet des données (JSON)</button>
+        </div>
         <div class="table-defilante"><table>
           <tr><th>Clé</th><th>Valeur</th></tr>
           ${params.map(p => `<tr><td><code>${esc(p.cle)}</code></td><td>${esc(p.valeur)}</td></tr>`).join('')}
@@ -1681,8 +1889,11 @@ async function vueAdmin(page) {
             <label class="champ">Valeur<input id="pa-valeur"></label>
             <button id="pa-enregistrer">Enregistrer</button>
           </div><div id="pa-msg"></div>
-          <p class="petite-note">Paramètres reconnus : <code>ratio_unite_payante</code> (tonnes pour 1 m³, défaut 1), <code>devise_reference</code>, <code>entreprise</code>.</p>
+          <p class="petite-note">Paramètres reconnus : <code>ratio_unite_payante</code> (tonnes pour 1 m³, défaut 1),
+          <code>prorata_deduction</code> (fraction de TVA déductible en %, défaut 100 ; en dessous, la TVA rémanente est capitalisée),
+          <code>devise_reference</code>, <code>entreprise</code>.</p>
         </div>`;
+      document.getElementById('pa-export-complet').onclick = () => telecharger('/admin/export-complet', 'export_tarifaire_complet.json');
       document.getElementById('pa-enregistrer').onclick = async () => {
         try {
           await api('/admin/parametres', { method: 'POST', body: { cle: val('pa-cle'), valeur: val('pa-valeur') } });

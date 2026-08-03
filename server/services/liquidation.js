@@ -14,11 +14,18 @@ async function chargerTaxes() {
   return rows;
 }
 
-async function chargerPosition(code) {
+/* Position en vigueur à une date donnée (F-M2-07 : recalcul à date), dernière version par défaut. */
+async function chargerPosition(code, date) {
   if (!code) return null;
   const { rows } = await query(
-    `SELECT * FROM positions_tarifaires WHERE code=$1 ORDER BY date_effet DESC LIMIT 1`, [code]);
-  return rows[0] || null;
+    `SELECT * FROM positions_tarifaires
+      WHERE code=$1 AND date_effet <= COALESCE($2::date, CURRENT_DATE)
+      ORDER BY date_effet DESC LIMIT 1`, [code, date || null]);
+  if (rows.length) return rows[0];
+  // Aucune version en vigueur à cette date : on retombe sur la plus ancienne connue
+  const { rows: toutes } = await query(
+    `SELECT * FROM positions_tarifaires WHERE code=$1 ORDER BY date_effet ASC LIMIT 1`, [code]);
+  return toutes[0] || null;
 }
 
 async function chargerExonerations() {
@@ -42,9 +49,9 @@ function tauxApplicable(taxe, position, origine, exonerations) {
  * Liquide une valeur en douane pour une position tarifaire donnée.
  * Retourne { lignes: [{code, libelle, base, taux, montant, traitement}], total, total_cout, total_creance, taux_effectif }
  */
-async function liquider({ valeurEnDouane, positionCode, origine }) {
+async function liquider({ valeurEnDouane, positionCode, origine, date }) {
   const [taxes, position, exonerations] = await Promise.all([
-    chargerTaxes(), chargerPosition(positionCode), chargerExonerations()
+    chargerTaxes(), chargerPosition(positionCode, date), chargerExonerations()
   ]);
   const vd = Number(valeurEnDouane) || 0;
   const montants = { VD: vd };

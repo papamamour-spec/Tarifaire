@@ -102,12 +102,13 @@ r.delete('/exonerations/:id', exiger('admin'), async (req, res) => {
 
 /* ---------------- Simulateur de liquidation (F-M2-03) ---------------- */
 r.post('/simulation', async (req, res) => {
-  const { valeur_en_douane, position_tarifaire, origine } = req.body || {};
+  const { valeur_en_douane, position_tarifaire, origine, date } = req.body || {};
   if (num(valeur_en_douane) === null) return res.status(400).json({ erreur: 'Valeur en douane requise' });
   const resultat = await liquider({
     valeurEnDouane: num(valeur_en_douane),
     positionCode: position_tarifaire,
-    origine
+    origine,
+    date: date || null
   });
   res.json(resultat);
 });

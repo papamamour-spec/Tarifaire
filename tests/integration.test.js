@@ -301,6 +301,78 @@ test('référentiel : article multi-fournisseurs, principal et comparaison', { s
   assert.equal(fiche.conditions_achat.length, 2);
 });
 
+test('fiche article : photos, articles liés, suggestion de position', { skip: !actif }, async () => {
+  // Photo (téléversement binaire brut)
+  const rep = await fetch(`${B}/referentiels/articles/T001/photos`, {
+    method: 'PUT',
+    headers: { Authorization: 'Bearer ' + jeton, 'Content-Type': 'image/png', 'X-Nom-Fichier': 'photo.png' },
+    body: Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4])
+  });
+  assert.equal(rep.ok, true);
+  const photos = await api('/referentiels/articles/T001/photos');
+  assert.equal(photos.length, 1);
+
+  // Article lié de type variante
+  await api('/referentiels/articles/T001/liens', {
+    method: 'POST', body: { article_lie_code: 'T002', type_lien: 'variante', description: 'parfum différent' }
+  });
+  const fiche = await api('/referentiels/articles/T001');
+  assert.equal(fiche.liens.length, 1);
+  assert.equal(fiche.photos.length, 1);
+  // Le lien apparaît aussi côté article lié (sens entrant)
+  const fiche2 = await api('/referentiels/articles/T002');
+  assert.equal(fiche2.liens.length, 1);
+
+  // Suggestion de position depuis un libellé
+  const suggestions = await api('/referentiels/suggestion-position?libelle=' + encodeURIComponent('Riz blanchi parfumé'));
+  assert.ok(suggestions.length >= 1);
+  assert.equal(suggestions[0].code, '1006309000');
+});
+
+test('M2-05 et M5-11/12 : écart de liquidation, comparaison des clés, simulation de variation', { skip: !actif }, async () => {
+  const dossiers = await api('/dossiers');
+  const id = dossiers.find(d => d.reference === 'TEST-001').id;
+
+  const ecarts = await api(`/dossiers/${id}/ecart-liquidation`);
+  assert.equal(ecarts.length, 2);
+  assert.ok(ecarts[0].total_simule > 0);
+
+  const cles = await api(`/dossiers/${id}/comparaison-cles`);
+  assert.equal(cles.lignes.length, 2);
+  // Les taux effectifs différant fortement entre riz (cat. 1) et savon (cat. 3),
+  // la clé unique doit produire un écart non nul
+  assert.ok(cles.ecart_max_pct > 0);
+
+  const variation = await api(`/dossiers/${id}/simulation-variation`, {
+    method: 'POST', body: { fret_pct: 50 }
+  });
+  assert.equal(variation.lignes.length, 2);
+  for (const l of variation.lignes) assert.ok(l.cout_unitaire_simule > l.cout_unitaire_actuel);
+});
+
+test('M5-06 : TVA rémanente lorsque le prorata de déduction est inférieur à 100 %', { skip: !actif }, async () => {
+  const dossiers = await api('/dossiers');
+  const id = dossiers.find(d => d.reference === 'TEST-001').id;
+  const avant = await api(`/dossiers/${id}/calculer`, { method: 'POST' });
+  await api('/admin/parametres', { method: 'POST', body: { cle: 'prorata_deduction', valeur: '80' } });
+  const apres = await api(`/dossiers/${id}/calculer`, { method: 'POST' });
+  // 20 % de la TVA bascule de la créance vers le coût
+  assert.ok(apres.totaux.cout_total > avant.totaux.cout_total);
+  assert.ok(apres.totaux.taxes_creance < avant.totaux.taxes_creance);
+  const difference = apres.totaux.cout_total - avant.totaux.cout_total;
+  const baisseCreance = avant.totaux.taxes_creance - apres.totaux.taxes_creance;
+  assert.ok(Math.abs(difference - baisseCreance) <= 2, 'le transfert créance vers coût doit être symétrique');
+  await api('/admin/parametres', { method: 'POST', body: { cle: 'prorata_deduction', valeur: '100' } });
+  await api(`/dossiers/${id}/calculer`, { method: 'POST' });
+});
+
+test('M11-09 : export complet des données', { skip: !actif }, async () => {
+  const exportation = await api('/admin/export-complet');
+  assert.ok(exportation.tables.articles.length >= 2);
+  assert.ok(exportation.tables.codes_taxes.length >= 8);
+  assert.ok(Object.keys(exportation.tables).length >= 25);
+});
+
 test('lot 4 : documentation API disponible sans jeton', { skip: !actif }, async () => {
   const rep = await fetch(`${B}/docs`);
   assert.equal(rep.ok, true);

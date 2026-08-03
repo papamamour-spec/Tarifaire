@@ -224,14 +224,25 @@ r.get('/articles/:code', async (req, res) => {
   const { rows } = await query('SELECT * FROM articles WHERE code_interne=$1', [req.params.code]);
   if (!rows.length) return res.status(404).json({ erreur: 'Article introuvable' });
   const article = enrichir(rows[0]);
-  const [cb, hist, cond] = await Promise.all([
+  const [cb, hist, cond, liens, photos] = await Promise.all([
     query('SELECT * FROM codes_barres_secondaires WHERE article_code=$1', [req.params.code]),
     query('SELECT * FROM historique_articles WHERE article_code=$1 ORDER BY date_modif DESC LIMIT 50', [req.params.code]),
     query(`SELECT ca.*, f.nom AS fournisseur_nom FROM conditions_achat ca
              JOIN fournisseurs f ON f.code=ca.fournisseur_code
-            WHERE ca.article_code=$1 ORDER BY ca.date_effet DESC`, [req.params.code])
+            WHERE ca.article_code=$1 ORDER BY ca.date_effet DESC`, [req.params.code]),
+    query(`SELECT l.*, a.libelle AS article_lie_libelle, 'sortant' AS sens
+             FROM articles_lies l JOIN articles a ON a.code_interne=l.article_lie_code
+            WHERE l.article_code=$1
+           UNION ALL
+           SELECT l.*, a.libelle, 'entrant'
+             FROM articles_lies l JOIN articles a ON a.code_interne=l.article_code
+            WHERE l.article_lie_code=$1`, [req.params.code]),
+    query('SELECT id, nom_fichier, type_mime, taille FROM articles_photos WHERE article_code=$1 ORDER BY id', [req.params.code])
   ]);
-  res.json({ ...article, codes_barres_secondaires: cb.rows, historique: hist.rows, conditions_achat: cond.rows });
+  res.json({
+    ...article, codes_barres_secondaires: cb.rows, historique: hist.rows,
+    conditions_achat: cond.rows, liens: liens.rows, photos: photos.rows
+  });
 });
 
 async function upsertArticle(req, code, donnees, source) {
@@ -346,13 +357,109 @@ r.post('/articles-import/csv', exiger('acheteur'), async (req, res) => {
   res.json({ previsualisation: false, ...rapport });
 });
 
-/* Détection de doublons de codes barres (F-M1-11) */
+/* Détection de doublons de codes barres et de libellés proches (F-M1-11) */
 r.get('/articles-doublons', async (req, res) => {
-  const { rows } = await query(
+  const { rows: codesBarres } = await query(
     `SELECT code_barres, array_agg(code_interne) AS articles
        FROM articles WHERE code_barres IS NOT NULL
       GROUP BY code_barres HAVING COUNT(*) > 1`);
+  let libellesProches = [];
+  try {
+    const { rows } = await query(
+      `SELECT a.code_interne AS article_1, a.libelle AS libelle_1,
+              b.code_interne AS article_2, b.libelle AS libelle_2,
+              ROUND(similarity(a.libelle, b.libelle)::numeric, 2) AS similarite
+         FROM articles a JOIN articles b ON a.code_interne < b.code_interne
+        WHERE similarity(a.libelle, b.libelle) > 0.55
+        ORDER BY similarity(a.libelle, b.libelle) DESC LIMIT 50`);
+    libellesProches = rows;
+  } catch { /* pg_trgm indisponible : détection limitée aux codes barres */ }
+  res.json({ codes_barres: codesBarres, libelles_proches: libellesProches });
+});
+
+/* Assistance au classement tarifaire : positions proches du libellé (F-M1-14) */
+r.get('/suggestion-position', async (req, res) => {
+  const libelle = (req.query.libelle || '').trim();
+  if (!libelle) return res.status(400).json({ erreur: 'Paramètre libelle requis' });
+  try {
+    const { rows } = await query(
+      `SELECT DISTINCT ON (code) code, libelle, categorie, taux_dd,
+              ROUND(similarity(libelle, $1)::numeric, 2) AS pertinence
+         FROM positions_tarifaires
+        WHERE similarity(libelle, $1) > 0.1
+        ORDER BY code, date_effet DESC`, [libelle]);
+    rows.sort((a, b) => Number(b.pertinence) - Number(a.pertinence));
+    return res.json(rows.slice(0, 5));
+  } catch {
+    // Repli sans pg_trgm : recherche par mots
+    const mots = libelle.toLowerCase().split(/\s+/).filter(m => m.length > 3);
+    if (!mots.length) return res.json([]);
+    const { rows } = await query(
+      `SELECT DISTINCT ON (code) code, libelle, categorie, taux_dd, NULL AS pertinence
+         FROM positions_tarifaires
+        WHERE ${mots.map((_, i) => `lower(libelle) LIKE $${i + 1}`).join(' OR ')}
+        ORDER BY code, date_effet DESC LIMIT 5`,
+      mots.map(m => '%' + m + '%'));
+    return res.json(rows);
+  }
+});
+
+/* Photos et fiches techniques de l'article (F-M1-13) */
+r.get('/articles/:code/photos', async (req, res) => {
+  const { rows } = await query(
+    `SELECT id, nom_fichier, type_mime, taille, televerse_le
+       FROM articles_photos WHERE article_code=$1 ORDER BY id`, [req.params.code]);
   res.json(rows);
+});
+
+r.put('/articles/:code/photos', exiger('acheteur'), express.raw({ type: '*/*', limit: '5mb' }), async (req, res) => {
+  if (!req.body || !req.body.length) return res.status(400).json({ erreur: 'Fichier vide' });
+  const { rows: aRows } = await query('SELECT 1 FROM articles WHERE code_interne=$1', [req.params.code]);
+  if (!aRows.length) return res.status(404).json({ erreur: 'Article introuvable' });
+  const nom = decodeURIComponent(req.headers['x-nom-fichier'] || 'photo');
+  const type = req.headers['content-type'] || 'application/octet-stream';
+  const { rows } = await query(
+    `INSERT INTO articles_photos (article_code, nom_fichier, type_mime, taille, contenu)
+     VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+    [req.params.code, nom, type, req.body.length, req.body]);
+  await auditer(req, 'ajout_photo', 'article', req.params.code, nom);
+  res.json({ ok: true, id: rows[0].id });
+});
+
+r.get('/photos/:id', async (req, res) => {
+  const { rows } = await query('SELECT * FROM articles_photos WHERE id=$1', [req.params.id]);
+  if (!rows.length) return res.status(404).json({ erreur: 'Photo introuvable' });
+  res.setHeader('Content-Type', rows[0].type_mime);
+  res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(rows[0].nom_fichier)}"`);
+  res.send(rows[0].contenu);
+});
+
+r.delete('/photos/:id', exiger('acheteur'), async (req, res) => {
+  await query('DELETE FROM articles_photos WHERE id=$1', [req.params.id]);
+  res.json({ ok: true });
+});
+
+/* Articles liés : lot, unité de vente consommateur, remplacement, variante (F-M1-12, F-M1-15) */
+const TYPES_LIENS = ['lot', 'uvc', 'remplacement', 'variante'];
+r.post('/articles/:code/liens', exiger('acheteur'), async (req, res) => {
+  const { article_lie_code, type_lien, description } = req.body || {};
+  if (!article_lie_code || !TYPES_LIENS.includes(type_lien)) {
+    return res.status(400).json({ erreur: `Article lié et type requis (${TYPES_LIENS.join(', ')})` });
+  }
+  if (article_lie_code === req.params.code) return res.status(400).json({ erreur: 'Un article ne peut pas être lié à lui-même' });
+  const { rows } = await query('SELECT 1 FROM articles WHERE code_interne=$1', [article_lie_code]);
+  if (!rows.length) return res.status(404).json({ erreur: `Article ${article_lie_code} introuvable` });
+  await query(
+    `INSERT INTO articles_lies (article_code, article_lie_code, type_lien, description)
+     VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
+    [req.params.code, article_lie_code, type_lien, description || null]);
+  await auditer(req, 'ajout_lien', 'article', req.params.code, `${type_lien} → ${article_lie_code}`);
+  res.json({ ok: true });
+});
+
+r.delete('/liens/:id', exiger('acheteur'), async (req, res) => {
+  await query('DELETE FROM articles_lies WHERE id=$1', [req.params.id]);
+  res.json({ ok: true });
 });
 
 module.exports = r;

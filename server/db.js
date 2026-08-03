@@ -471,6 +471,27 @@ CREATE TABLE IF NOT EXISTS pieces_fichiers (
   televerse_le TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Compléments fiche article : photos (F-M1-13), articles liés et variantes (F-M1-12, F-M1-15)
+CREATE TABLE IF NOT EXISTS articles_photos (
+  id SERIAL PRIMARY KEY,
+  article_code TEXT NOT NULL REFERENCES articles(code_interne) ON DELETE CASCADE,
+  nom_fichier TEXT NOT NULL,
+  type_mime TEXT NOT NULL,
+  taille INT NOT NULL,
+  contenu BYTEA NOT NULL,
+  televerse_le TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_photos_article ON articles_photos(article_code);
+
+CREATE TABLE IF NOT EXISTS articles_lies (
+  id SERIAL PRIMARY KEY,
+  article_code TEXT NOT NULL REFERENCES articles(code_interne) ON DELETE CASCADE,
+  article_lie_code TEXT NOT NULL REFERENCES articles(code_interne) ON DELETE CASCADE,
+  type_lien TEXT NOT NULL,
+  description TEXT,
+  UNIQUE (article_code, article_lie_code, type_lien)
+);
+
 CREATE TABLE IF NOT EXISTS notifications (
   id SERIAL PRIMARY KEY,
   destinataire_role TEXT,
