@@ -1084,7 +1084,7 @@ async function vueDouane(page) {
       <button data-o="simulateur" class="actif">Simulateur</button>
       <button data-o="positions">Positions tarifaires</button>
       <button data-o="taxes">Codes taxes</button>
-      <button data-o="exonerations">Exonérations</button>
+      <button data-o="exonerations">Règles par produit (accises, exonérations)</button>
     </div>
     <div id="d-contenu"></div>`;
   const onglets = page.querySelectorAll('.onglets button');
@@ -1115,7 +1115,7 @@ async function vueDouane(page) {
               : '<p class="message info">Position inconnue du référentiel : droit de douane à 0 %, seules les taxes à taux fixe sont calculées.</p>'}
             <div class="table-defilante"><table>
               <tr><th>Taxe</th><th class="num">Base</th><th class="num">Taux</th><th class="num">Montant</th><th>Traitement</th></tr>
-              ${r.lignes.map(l => `<tr><td>${esc(l.code)} · ${esc(l.libelle)}</td><td class="num">${fcfa(l.base)}</td><td class="num">${fmt(l.taux, 2)} %</td><td class="num">${fcfa(l.montant)}</td>
+              ${r.lignes.map(l => `<tr><td>${esc(l.code)} · ${esc(l.libelle)}${l.regle_appliquee ? `<br><span class="badge bleu" title="${esc(l.regle_appliquee)}">règle produit</span> <span class="petite-note">${esc(l.regle_appliquee)}</span>` : ''}</td><td class="num">${fcfa(l.base)}</td><td class="num">${fmt(l.taux, 2)} %</td><td class="num">${fcfa(l.montant)}</td>
                 <td>${l.traitement === 'cout' ? '<span class="badge orange">coût, incorporé au stock</span>' : '<span class="badge vert">créance sur l\'État</span>'}</td></tr>`).join('')}
               <tr><td><b>Total liquidé</b></td><td></td><td></td><td class="num"><b>${fcfa(r.total)}</b></td><td></td></tr>
               <tr><td>dont coût (capitalisé)</td><td></td><td></td><td class="num">${fcfa(r.total_cout)}</td><td></td></tr>
@@ -1188,7 +1188,7 @@ async function vueDouane(page) {
     } else if (o === 'exonerations') {
       const [exos, taxes] = await Promise.all([api('/douane/exonerations'), api('/douane/taxes')]);
       c.innerHTML = `
-        <div class="message info">Une exonération remplace le taux d'une taxe pour une origine et/ou un préfixe de position (ex. origine UEMOA : droit de douane à 0 %).</div>
+        <div class="message info">Une règle remplace le taux d'une taxe pour un préfixe de position et/ou une origine : c'est ainsi que sont portés les <b>droits d'accise par produit</b> (alcools 40 %, boissons sucrées 5 %, tabacs 65 %, café et thé 5 %, cosmétiques 15 %, corps gras 15 %), la <b>taxe conjoncturelle</b> (sucre), les <b>exonérations de TVA</b> (riz, blé, farine, médicaments, livres, engrais) et l'<b>origine communautaire</b> (droit de douane à 0 % sous certificat CEDEAO). La règle la plus spécifique l'emporte : préfixe le plus long, puis origine précisée. Base préchargée pour le Sénégal, taux indicatifs modifiables : les textes officiels font foi.</div>
         <div class="table-defilante"><table>
           <tr><th>Préfixe position</th><th>Origine</th><th>Taxe</th><th class="num">Taux appliqué</th><th>Commentaire</th><th></th></tr>
           ${exos.map(x => `<tr><td>${esc(x.position_prefixe) || '<i>toutes</i>'}</td><td>${esc(x.origine) || '<i>toutes</i>'}</td><td>${esc(x.code_taxe)}</td>
