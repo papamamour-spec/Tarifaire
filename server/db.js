@@ -645,6 +645,9 @@ async function seedFiscalite() {
     await q(
       `UPDATE codes_taxes SET base_composants='VD+DD+RS+PCS+PCC+COSEC+PROMAD+TCI+ACC'
         WHERE code='TVA' AND base_composants='VD+DD+RS+PCS+PCC+COSEC+TCI+ACC'`);
+    // PROMAD : taux corrigé de 1 à 2 % (constaté sur les déclarations réelles),
+    // uniquement si le taux d'origine n'a pas été modifié par le client
+    await q(`UPDATE codes_taxes SET taux=2 WHERE code='PROMAD' AND taux=1`);
     // Réordonnancement de la cascade pour insérer PROMAD après COSEC
     await q(`UPDATE codes_taxes SET ordre=7 WHERE code='TCI' AND ordre=6`);
     await q(`UPDATE codes_taxes SET ordre=8 WHERE code='ACC' AND ordre IN (6,7)`);
