@@ -1,0 +1,75 @@
+'use strict';
+/* Module M11 : administration — utilisateurs, paramètres, journal d'audit, taux de change. */
+const express = require('express');
+const bcrypt = require('bcryptjs');
+const { query } = require('../db');
+const { exiger, auditer, ROLES } = require('../auth');
+const { num } = require('../util');
+
+const r = express.Router();
+
+r.get('/utilisateurs', exiger('admin'), async (req, res) => {
+  const { rows } = await query('SELECT id, email, nom, role, actif, cree_le FROM utilisateurs ORDER BY id');
+  res.json(rows);
+});
+
+r.post('/utilisateurs', exiger('admin'), async (req, res) => {
+  const { email, nom, role, mot_de_passe, actif } = req.body || {};
+  if (!email || !nom) return res.status(400).json({ erreur: 'Courriel et nom requis' });
+  if (role && !ROLES.includes(role)) return res.status(400).json({ erreur: `Rôle invalide. Attendu : ${ROLES.join(', ')}` });
+  const { rows: existant } = await query('SELECT id FROM utilisateurs WHERE lower(email)=lower($1)', [email]);
+  if (existant.length) {
+    const sets = ['nom=$2', 'role=COALESCE($3, role)', 'actif=COALESCE($4, actif)'];
+    const params = [email, nom, role || null, typeof actif === 'boolean' ? actif : null];
+    if (mot_de_passe) { params.push(bcrypt.hashSync(mot_de_passe, 10)); sets.push(`mot_de_passe_hash=$${params.length}`); }
+    await query(`UPDATE utilisateurs SET ${sets.join(', ')} WHERE lower(email)=lower($1)`, params);
+    await auditer(req, 'modification', 'utilisateur', email);
+    return res.json({ ok: true, action: 'modifie' });
+  }
+  if (!mot_de_passe) return res.status(400).json({ erreur: 'Mot de passe requis pour un nouvel utilisateur' });
+  await query(
+    `INSERT INTO utilisateurs (email, mot_de_passe_hash, nom, role) VALUES ($1,$2,$3,$4)`,
+    [email, bcrypt.hashSync(mot_de_passe, 10), nom, role || 'lecture']);
+  await auditer(req, 'creation', 'utilisateur', email);
+  res.json({ ok: true, action: 'cree' });
+});
+
+r.get('/parametres', exiger('admin'), async (req, res) => {
+  const { rows } = await query('SELECT * FROM parametres ORDER BY cle');
+  res.json(rows);
+});
+
+r.post('/parametres', exiger('admin'), async (req, res) => {
+  const { cle, valeur } = req.body || {};
+  if (!cle) return res.status(400).json({ erreur: 'Clé requise' });
+  await query(
+    `INSERT INTO parametres (cle, valeur) VALUES ($1,$2) ON CONFLICT (cle) DO UPDATE SET valeur=$2`,
+    [cle, String(valeur ?? '')]);
+  await auditer(req, 'parametre', 'parametres', cle, String(valeur ?? ''));
+  res.json({ ok: true });
+});
+
+r.get('/journal', exiger('comptable'), async (req, res) => {
+  const { rows } = await query('SELECT * FROM journal_audit ORDER BY id DESC LIMIT 300');
+  res.json(rows);
+});
+
+/* Table des cours de change (M2 — table des cours, FE09) */
+r.get('/taux-change', async (req, res) => {
+  const { rows } = await query(
+    `SELECT DISTINCT ON (devise) * FROM taux_change ORDER BY devise, date_cours DESC`);
+  res.json(rows);
+});
+
+r.post('/taux-change', exiger('comptable'), async (req, res) => {
+  const { devise, cours, date_cours, source } = req.body || {};
+  if (!devise || num(cours) === null) return res.status(400).json({ erreur: 'Devise et cours requis' });
+  await query(
+    `INSERT INTO taux_change (devise, date_cours, cours, source)
+     VALUES ($1, COALESCE($2::date, CURRENT_DATE), $3, $4)
+     ON CONFLICT (devise, date_cours) DO UPDATE SET cours=$3, source=$4`,
+    [devise.toUpperCase(), date_cours || null, num(cours), source || null]);
+  res.json({ ok: true });
+});
+
+module.exports = r;
