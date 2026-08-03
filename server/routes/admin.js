@@ -60,6 +60,29 @@ r.get('/journal-verification', exiger('comptable'), async (req, res) => {
   res.json(await verifierJournal());
 });
 
+/*
+ * F-M11-09 et F-NF-06 : export complet des données dans un format ouvert (réversibilité).
+ * Toutes les tables métier en JSON, hors contenus binaires et secrets.
+ */
+r.get('/export-complet', exiger('admin'), async (req, res) => {
+  const tables = ['familles', 'fournisseurs', 'articles', 'codes_barres_secondaires', 'articles_lies',
+    'conditions_achat', 'positions_tarifaires', 'codes_taxes', 'exonerations', 'taux_change',
+    'dossiers', 'dossier_pieces', 'dossier_lignes', 'declaration_articles', 'declaration_taxes',
+    'dossier_couts', 'resultats_couts', 'revisions_cout', 'baremes_provision',
+    'formats_magasin', 'points_de_vente', 'politiques_tarifaires', 'regles_validation', 'tarifs',
+    'promotions', 'enseignes_concurrentes', 'releves_concurrents', 'ventes', 'parametres',
+    'historique_articles', 'journal_audit'];
+  const exportation = { genere_le: new Date().toISOString(), application: 'tarifaire', tables: {} };
+  for (const table of tables) {
+    const { rows } = await query(`SELECT * FROM ${table}`);
+    exportation.tables[table] = rows;
+  }
+  await auditer(req, 'export_complet', 'base', null, `${tables.length} tables`);
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="export_tarifaire_complet.json"`);
+  res.json(exportation);
+});
+
 /* Table des cours de change (M2 — table des cours, FE09) */
 r.get('/taux-change', async (req, res) => {
   const { rows } = await query(

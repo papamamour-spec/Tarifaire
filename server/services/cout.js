@@ -159,13 +159,25 @@ async function calculerDossier(dossierId) {
 
   // 2) Droits et taxes : montant réel par article de déclaration, ventilé sur les seules
   //    lignes rattachées à cet article, au prorata de leur valeur (F-M5-02).
+  // TVA rémanente (F-M5-06) : si le prorata de déduction est inférieur à 100 %, la part
+  // non déductible de la TVA d'importation devient un coût capitalisé au lieu d'une créance.
+  const prorata = Math.min(100, Math.max(0, Number(await parametre('prorata_deduction', '100')) || 100));
   for (const da of declArts) {
     const rattachees = res.filter(r => Number(r.ligne.declaration_rang) === Number(da.rang));
     const taxesArt = declTaxes.filter(t => t.declaration_article_id === da.id);
-    const coutTaxes = taxesArt.filter(t => (traitementTaxe.get(t.code_taxe) || 'cout') === 'cout')
+    let coutTaxes = taxesArt.filter(t => (traitementTaxe.get(t.code_taxe) || 'cout') === 'cout')
       .reduce((s, t) => s + Number(t.montant), 0);
-    const creanceTaxes = taxesArt.filter(t => traitementTaxe.get(t.code_taxe) === 'creance')
+    let creanceTaxes = taxesArt.filter(t => traitementTaxe.get(t.code_taxe) === 'creance')
       .reduce((s, t) => s + Number(t.montant), 0);
+    if (prorata < 100) {
+      const tva = taxesArt.filter(t => t.code_taxe === 'TVA' && traitementTaxe.get('TVA') === 'creance')
+        .reduce((s, t) => s + Number(t.montant), 0);
+      const remanente = round(tva * (1 - prorata / 100), 2);
+      if (remanente > 0) {
+        coutTaxes += remanente;
+        creanceTaxes -= remanente;
+      }
+    }
     if (!rattachees.length) {
       if (coutTaxes > 0) alertes.push(`Article de déclaration n°${da.rang} (${da.position_tarifaire}) : aucune ligne de facture rattachée, taxes non réparties`);
       continue;

@@ -4,7 +4,7 @@ const express = require('express');
 const { query, transaction } = require('../db');
 const { exiger, auditer } = require('../auth');
 const { parseCsv, toCsv, num, round } = require('../util');
-const { liquiderDeclaration } = require('../services/liquidation');
+const { liquiderDeclaration, liquider } = require('../services/liquidation');
 const { calculerDossier } = require('../services/cout');
 const { apprendreBaremes, proposerProvisions } = require('../services/baremes');
 const { notifier } = require('../services/notifications');
@@ -501,6 +501,115 @@ r.get('/:id/pieces/:pieceId/fichier', async (req, res) => {
   res.setHeader('Content-Type', rows[0].type_mime);
   res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(rows[0].nom_fichier)}"`);
   res.send(rows[0].contenu);
+});
+
+/*
+ * F-M2-05 : écart entre liquidation simulée et liquidation retenue (montants réels compris).
+ * Pour chaque article de déclaration : simulation recalculée vs montants enregistrés.
+ */
+r.get('/:id/ecart-liquidation', async (req, res) => {
+  const { rows: arts } = await query(
+    'SELECT * FROM declaration_articles WHERE dossier_id=$1 ORDER BY rang', [req.params.id]);
+  const sortie = [];
+  for (const da of arts) {
+    const sim = await liquider({ valeurEnDouane: da.valeur_caf, positionCode: da.position_tarifaire, origine: da.origine });
+    const { rows: retenues } = await query(
+      'SELECT code_taxe, montant, origine_montant FROM declaration_taxes WHERE declaration_article_id=$1', [da.id]);
+    const retenuParCode = new Map(retenues.map(t => [t.code_taxe, t]));
+    const taxes = sim.lignes.map(l => {
+      const retenu = retenuParCode.get(l.code);
+      return {
+        code: l.code, simule: l.montant,
+        retenu: retenu ? Number(retenu.montant) : null,
+        source: retenu ? retenu.origine_montant : 'absent',
+        ecart: retenu ? Number((Number(retenu.montant) - l.montant).toFixed(0)) : null
+      };
+    });
+    const totalSimule = taxes.reduce((s, t) => s + t.simule, 0);
+    const totalRetenu = taxes.reduce((s, t) => s + (t.retenu ?? 0), 0);
+    sortie.push({
+      rang: da.rang, position_tarifaire: da.position_tarifaire, valeur_caf: Number(da.valeur_caf),
+      taxes, total_simule: totalSimule, total_retenu: totalRetenu,
+      ecart_total: Number((totalRetenu - totalSimule).toFixed(0)),
+      ecart_pct: totalSimule > 0 ? round((totalRetenu - totalSimule) / totalSimule * 100, 2) : null
+    });
+  }
+  res.json(sortie);
+});
+
+/*
+ * F-M5-11 : comparaison entre le coût obtenu avec les clés multiples (calcul de référence)
+ * et celui d'une clé unique à la valeur (le traitement usuel des ERP), pour mesurer l'enjeu.
+ */
+r.get('/:id/comparaison-cles', async (req, res) => {
+  const { rows: resultats } = await query(
+    `SELECT r.*, l.rang, l.libelle FROM resultats_couts r
+     JOIN dossier_lignes l ON l.id=r.ligne_id WHERE r.dossier_id=$1 ORDER BY l.rang`, [req.params.id]);
+  if (!resultats.length) return res.status(400).json({ erreur: 'Calculer le coût de revient avant de comparer' });
+  const totalValeur = resultats.reduce((s, x) => s + Number(x.prix_achat_total), 0);
+  const totalAccessoire = resultats.reduce((s, x) => s + (Number(x.cout_total) - Number(x.prix_achat_total)), 0);
+  const lignes = resultats.map(x => {
+    const achat = Number(x.prix_achat_total);
+    const q = Number(x.quantite) || 1;
+    // Clé unique : tous les frais et taxes répartis au prorata de la valeur d'achat
+    const coutCleUnique = achat + (totalValeur > 0 ? totalAccessoire * achat / totalValeur : 0);
+    const unitaireCleUnique = round(coutCleUnique / q, 2);
+    const unitaireReference = Number(x.cout_unitaire);
+    return {
+      rang: x.rang, article_code: x.article_code, libelle: x.libelle, quantite: q,
+      cout_unitaire_cles_multiples: unitaireReference,
+      cout_unitaire_cle_unique: unitaireCleUnique,
+      ecart_unitaire: round(unitaireReference - unitaireCleUnique, 2),
+      ecart_pct: unitaireCleUnique > 0 ? round((unitaireReference - unitaireCleUnique) / unitaireCleUnique * 100, 2) : null
+    };
+  });
+  const pire = lignes.reduce((m, l) => Math.max(m, Math.abs(l.ecart_pct || 0)), 0);
+  res.json({
+    lignes,
+    enjeu: `Une clé unique fausserait le coût unitaire jusqu'à ${pire} % sur ce dossier`,
+    ecart_max_pct: pire
+  });
+});
+
+/*
+ * F-M5-12 : simulation d'une variation du fret, du cours de change ou des droits et taxes.
+ * Repart des composantes enregistrées et applique les variations en pourcentage :
+ * fret_pct sur la nature fret, droits_pct sur les droits et taxes, change_pct sur le prix
+ * d'achat et les coûts libellés en devise (approximation : le prix d'achat).
+ */
+r.post('/:id/simulation-variation', async (req, res) => {
+  const { fret_pct, change_pct, droits_pct } = req.body || {};
+  const vFret = 1 + (num(fret_pct) || 0) / 100;
+  const vChange = 1 + (num(change_pct) || 0) / 100;
+  const vDroits = 1 + (num(droits_pct) || 0) / 100;
+  const { rows: resultats } = await query(
+    `SELECT r.*, l.rang FROM resultats_couts r JOIN dossier_lignes l ON l.id=r.ligne_id
+      WHERE r.dossier_id=$1 ORDER BY l.rang`, [req.params.id]);
+  if (!resultats.length) return res.status(400).json({ erreur: 'Calculer le coût de revient avant de simuler' });
+  const lignes = resultats.map(x => {
+    const detail = x.detail || {};
+    let nouveauTotal = 0;
+    for (const c of (detail.composantes || [])) {
+      let m = Number(c.montant);
+      if (c.nature === 'achat') m *= vChange;
+      else if (c.nature === 'fret') m *= vFret * vChange;
+      else if (c.nature === 'droits_taxes') m *= vDroits * vChange;
+      nouveauTotal += m;
+    }
+    const q = Number(x.quantite) || 1;
+    const unitaireActuel = Number(x.cout_unitaire);
+    const unitaireSimule = round(nouveauTotal / q, 2);
+    return {
+      rang: x.rang, article_code: x.article_code, quantite: q,
+      cout_unitaire_actuel: unitaireActuel,
+      cout_unitaire_simule: unitaireSimule,
+      variation_pct: unitaireActuel > 0 ? round((unitaireSimule - unitaireActuel) / unitaireActuel * 100, 2) : null
+    };
+  });
+  res.json({
+    hypotheses: { fret_pct: num(fret_pct) || 0, change_pct: num(change_pct) || 0, droits_pct: num(droits_pct) || 0 },
+    lignes
+  });
 });
 
 /* Export des résultats de coût (F-M9-03) */
