@@ -479,10 +479,10 @@ test('fiscalité Sénégal : accises par produit, TCI, exonérations TVA, règle
   const tvaBiere = biere.lignes.find(l => l.code === 'TVA');
   assert.ok(tvaBiere.base > 1000000 + accBiere.montant - 1, 'la base TVA doit inclure l’accise');
 
-  // PROMAD : 1 % de la valeur en douane, inclus dans la base de la TVA
+  // PROMAD : 2 % de la valeur en douane (taux des déclarations réelles), dans la base TVA
   const promadBiere = biere.lignes.find(l => l.code === 'PROMAD');
-  assert.equal(promadBiere.taux, 1);
-  assert.equal(promadBiere.montant, 10000);
+  assert.equal(promadBiere.taux, 2);
+  assert.equal(promadBiere.montant, 20000);
   assert.ok(tvaBiere.base >= 1000000 + accBiere.montant + promadBiere.montant - 1,
     'la base TVA doit inclure le PROMAD');
 
