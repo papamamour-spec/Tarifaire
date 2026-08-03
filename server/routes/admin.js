@@ -1,5 +1,5 @@
 'use strict';
-/* Module M11 : administration — utilisateurs, paramètres, journal d'audit, taux de change. */
+/* Module M11 : administration - utilisateurs, paramètres, journal d'audit, taux de change. */
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const { query } = require('../db');
@@ -54,7 +54,7 @@ r.get('/journal', exiger('comptable'), async (req, res) => {
   res.json(rows);
 });
 
-/* Lot 1 — Vérification d'intégrité du journal chaîné (F-M11-05) */
+/* Lot 1 - Vérification d'intégrité du journal chaîné (F-M11-05) */
 r.get('/journal-verification', exiger('comptable'), async (req, res) => {
   const { verifierJournal } = require('../auth');
   res.json(await verifierJournal());
@@ -83,7 +83,7 @@ r.get('/export-complet', exiger('admin'), async (req, res) => {
   res.json(exportation);
 });
 
-/* Table des cours de change (M2 — table des cours, FE09) */
+/* Table des cours de change (M2 - table des cours, FE09) */
 r.get('/taux-change', async (req, res) => {
   const { rows } = await query(
     `SELECT DISTINCT ON (devise) * FROM taux_change ORDER BY devise, date_cours DESC`);

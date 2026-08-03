@@ -3,7 +3,7 @@
  * Service worker (lot 3) : l'application se charge hors connexion, les appels d'API
  * restent réseau (les relevés hors connexion sont mis en file par l'application elle-même).
  */
-const CACHE = 'tarifaire-v2';
+const CACHE = 'tarifaire-v3';
 const STATIQUES = ['/', '/index.html', '/app.js', '/styles.css', '/manifest.webmanifest', '/docs.html'];
 
 self.addEventListener('install', evt => {

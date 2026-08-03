@@ -1,5 +1,5 @@
 'use strict';
-/* Tarifaire — application web (page unique, sans dépendance externe). */
+/* Tarifaire · application web (page unique, sans dépendance externe). */
 
 /* ---------------------------------- Socle ---------------------------------- */
 const etat = {
@@ -32,11 +32,11 @@ function esc(v) {
   return String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 function fmt(n, dec = 0) {
-  if (n === null || n === undefined || n === '' || isNaN(Number(n))) return '—';
+  if (n === null || n === undefined || n === '' || isNaN(Number(n))) return '-';
   return Number(n).toLocaleString('fr-FR', { minimumFractionDigits: dec, maximumFractionDigits: dec });
 }
-function fcfa(n) { return n === null || n === undefined ? '—' : fmt(n) + ' F'; }
-function dateFr(d) { return d ? new Date(d).toLocaleDateString('fr-FR') : '—'; }
+function fcfa(n) { return n === null || n === undefined ? '-' : fmt(n) + ' F'; }
+function dateFr(d) { return d ? new Date(d).toLocaleDateString('fr-FR') : '-'; }
 function val(id) { const e = document.getElementById(id); return e ? e.value.trim() : ''; }
 function coche(id) { const e = document.getElementById(id); return e ? e.checked : false; }
 
@@ -70,26 +70,27 @@ function rendre() {
   const [route, ...args] = location.hash.replace(/^#\/?/, '').split('/');
   const vue = routes[route] || vueTableau;
   const menu = [
-    ['tableau', 'Tableau de bord'],
-    ['articles', 'Référentiel article'],
-    ['douane', 'Douane & fiscalité'],
-    ['dossiers', "Dossiers d'importation"],
-    ['tarification', 'Tarification'],
-    ['veille', 'Veille concurrentielle'],
-    ['marges', 'Marge réalisée'],
-    ['admin', 'Administration'],
-    ['compte', 'Mon compte']
+    ['tableau', '📊 Tableau de bord'],
+    ['articles', '📦 Référentiel'],
+    ['douane', '🛃 Douane & fiscalité'],
+    ['dossiers', "🚢 Dossiers d'importation"],
+    ['tarification', '💰 Tarification'],
+    ['veille', '🔎 Veille concurrentielle'],
+    ['marges', '📈 Marge réalisée'],
+    ['admin', '⚙️ Administration'],
+    ['compte', '👤 Mon compte']
   ];
   app.innerHTML = `
     <nav class="lateral">
-      <div class="logo">TARIFAIRE<small>Prix de revient &amp; politique tarifaire — UEMOA</small></div>
+      <div class="logo">TARIFAIRE<small>Prix de revient &amp; politique tarifaire · UEMOA</small></div>
       ${menu.map(([r, l]) => `<a class="item ${route === r || (route === '' && r === 'tableau') || (route === 'article' && r === 'articles') || (route === 'dossier' && r === 'dossiers') ? 'actif' : ''}" href="#/${r}">${l}${r === 'compte' ? ' <span id="badge-notifs"></span>' : ''}</a>`).join('')}
       <div class="pied">
         <div>${esc(etat.utilisateur?.nom || '')}<br><span class="badge gris">${esc(etat.utilisateur?.role || '')}</span></div>
-        <button class="secondaire petit" onclick="deconnexion()">Se déconnecter</button>
+        <button class="secondaire petit" id="btn-deconnexion">Se déconnecter</button>
       </div>
     </nav>
     <main class="contenu" id="page">Chargement…</main>`;
+  document.getElementById('btn-deconnexion').addEventListener('click', deconnexion);
   vue(document.getElementById('page'), args).catch(e => {
     document.getElementById('page').innerHTML = `<div class="message erreur">${esc(e.message)}</div>`;
   });
@@ -147,19 +148,44 @@ function vueConnexion(app) {
 
 /* ---------------------------------- Tableau de bord ---------------------------------- */
 async function vueTableau(page) {
-  const [tb, analyse] = await Promise.all([api('/pilotage/tableau-de-bord'), api('/pilotage/analyse-dossiers')]);
+  const [tb, analyse, fournisseurs] = await Promise.all([
+    api('/pilotage/tableau-de-bord'), api('/pilotage/analyse-dossiers'), api('/referentiels/fournisseurs')]);
   const statuts = Object.fromEntries(tb.dossiers_par_statut.map(x => [x.statut, x.n]));
   const tarifs = Object.fromEntries(tb.tarifs_par_statut.map(x => [x.statut, x.n]));
+
+  // Guide de démarrage : accompagne les nouveaux utilisateurs jusqu'au premier prix publié
+  const etapes = [
+    { fait: fournisseurs.length > 0, titre: 'Créer vos fournisseurs', detail: 'Référentiel > Fournisseurs, ou en un clic depuis une fiche article', lien: '#/articles' },
+    { fait: tb.articles.total > 0, titre: 'Créer ou importer vos articles', detail: 'Référentiel > bouton Importer (CSV) ou + Nouvel article', lien: '#/articles' },
+    { fait: (statuts.ouvert || 0) + (statuts.cloture || 0) + (statuts.receptionne || 0) + (statuts.declare || 0) + (statuts.embarque || 0) + (statuts.revise || 0) + (statuts.titres_obtenus || 0) > 0, titre: 'Ouvrir votre premier dossier d\'importation', detail: 'Facture fournisseur, coûts, déclaration en douane', lien: '#/dossiers' },
+    { fait: tb.coefficient_moyen !== null, titre: 'Calculer le coût de revient débarqué', detail: 'Dans le dossier, onglet Coût de revient > Calculer', lien: '#/dossiers' },
+    { fait: (tarifs.publie || 0) > 0, titre: 'Proposer et publier vos prix', detail: 'Tarification > Proposer des prix, puis publier', lien: '#/tarification' },
+    { fait: tb.releves_30j.mois > 0, titre: 'Lancer la veille concurrentielle', detail: 'Saisir ou importer des relevés de prix', lien: '#/veille' }
+  ];
+  const faites = etapes.filter(e => e.fait).length;
+  const guideOuvert = faites < etapes.length;
+
   page.innerHTML = `
     <h1>Tableau de bord</h1>
     <p class="sous-titre">Vue d'ensemble du référentiel, des coûts et de la politique tarifaire</p>
+    <details class="carte guide" ${guideOuvert ? 'open' : ''}>
+      <summary><b>🚀 Bien démarrer</b> · ${faites}/${etapes.length} étape(s) franchie(s)${faites === etapes.length ? ' · bravo, la chaîne complète est en place !' : ''}</summary>
+      <ol class="guide-liste">
+        ${etapes.map(e => `<li class="${e.fait ? 'fait' : ''}">
+          <span class="coche">${e.fait ? '✅' : '⬜'}</span>
+          <a href="${e.lien}"><b>${e.titre}</b></a>
+          <span class="petite-note">${e.detail}</span>
+        </li>`).join('')}
+      </ol>
+      <p class="petite-note">La chaîne de valeur : référentiel → dossier d'importation → coût de revient débarqué → coût de mise en rayon → prix par format → veille. Chaque donnée saisie une fois est réutilisée partout.</p>
+    </details>
     <div class="grille kpi">
       <div class="carte"><div class="valeur">${fmt(tb.articles.actifs)}</div><div class="libelle">Articles actifs (${fmt(tb.articles.total)} au total)</div></div>
       <div class="carte"><div class="valeur">${fmt(tb.completude.taux, 1)} %</div><div class="libelle">Complétude du référentiel (poids, volume, colisage, position)</div></div>
       <div class="carte"><div class="valeur">${fcfa(tb.creance_tva)}</div><div class="libelle">Créances sur l'État (TVA import + acomptes liquidés)</div></div>
       <div class="carte"><div class="valeur ${tb.references_marge_negative > 0 ? 'alerte-rouge' : ''}">${fmt(tb.references_marge_negative)}</div><div class="libelle">Tarifs en marge négative</div></div>
-      <div class="carte"><div class="valeur">${tb.coefficient_moyen ? fmt(tb.coefficient_moyen, 3) : '—'}</div><div class="libelle">Coefficient de revient moyen</div></div>
-      <div class="carte"><div class="valeur">${tb.taux_effectif_bornes && tb.taux_effectif_bornes.mini !== null ? fmt(tb.taux_effectif_bornes.mini, 1) + ' → ' + fmt(tb.taux_effectif_bornes.maxi, 1) + ' %' : '—'}</div><div class="libelle">Taux effectif de droits et taxes (mini → maxi)</div></div>
+      <div class="carte"><div class="valeur">${tb.coefficient_moyen ? fmt(tb.coefficient_moyen, 3) : '-'}</div><div class="libelle">Coefficient de revient moyen</div></div>
+      <div class="carte"><div class="valeur">${tb.taux_effectif_bornes && tb.taux_effectif_bornes.mini !== null ? fmt(tb.taux_effectif_bornes.mini, 1) + ' → ' + fmt(tb.taux_effectif_bornes.maxi, 1) + ' %' : '-'}</div><div class="libelle">Taux effectif de droits et taxes (mini → maxi)</div></div>
       <div class="carte"><div class="valeur">${fmt(tb.releves_30j.mois)}</div><div class="libelle">Relevés concurrents sur 30 jours (${fmt(tb.releves_30j.non_apparies)} à apparier)</div></div>
       <div class="carte"><div class="valeur ${tb.doublons_codes_barres > 0 ? 'alerte-rouge' : ''}">${fmt(tb.doublons_codes_barres)}</div><div class="libelle">Doublons de codes barres</div></div>
       <div class="carte"><div class="valeur">${fmt(statuts.ouvert || 0)} / ${fmt(statuts.cloture || 0)}</div><div class="libelle">Dossiers ouverts / clôturés</div></div>
@@ -169,10 +195,10 @@ async function vueTableau(page) {
     <div class="table-defilante"><table>
       <tr><th>Référence</th><th>Statut</th><th class="num">Lignes</th><th class="num">Valeur d'achat</th><th class="num">Coût total</th><th class="num">Coefficient</th><th class="num">Taux effectif</th></tr>
       ${analyse.map(d => `<tr class="cliquable" onclick="naviguer('#/dossier/${d.id}')">
-        <td>${esc(d.reference)}</td><td>${badgeStatutDossier(d.statut)}</td>
+        <td><a href="#/dossier/${d.id}"><b>${esc(d.reference)}</b></a></td><td>${badgeStatutDossier(d.statut)}</td>
         <td class="num">${fmt(d.nb_lignes)}</td><td class="num">${fcfa(d.valeur_achat)}</td>
-        <td class="num">${fcfa(d.cout_total)}</td><td class="num">${d.coefficient ? fmt(d.coefficient, 3) : '—'}</td>
-        <td class="num">${d.te_min !== null && d.te_min !== undefined ? fmt(d.te_min, 1) + ' → ' + fmt(d.te_max, 1) + ' %' : '—'}</td>
+        <td class="num">${fcfa(d.cout_total)}</td><td class="num">${d.coefficient ? fmt(d.coefficient, 3) : '-'}</td>
+        <td class="num">${d.te_min !== null && d.te_min !== undefined ? fmt(d.te_min, 1) + ' → ' + fmt(d.te_max, 1) + ' %' : '-'}</td>
       </tr>`).join('') || '<tr><td colspan="7">Aucun dossier. Créez votre premier dossier d\'importation.</td></tr>'}
     </table></div>`;
 }
@@ -289,8 +315,8 @@ async function afficherOngletFamilles(conteneur, recharger) {
       <tr><th>Code</th><th>Libellé</th><th>Parente</th><th class="num">Marge cible</th><th class="num">Démarque</th></tr>
       ${familles.map(f => `<tr>
         <td><b>${esc(f.code)}</b></td><td>${esc(f.libelle)}</td><td>${esc(f.parent_code || '')}</td>
-        <td class="num">${f.marge_cible !== null ? fmt(f.marge_cible, 1) + ' %' : '—'}</td>
-        <td class="num">${f.demarque_taux !== null ? fmt(f.demarque_taux, 1) + ' %' : '—'}</td>
+        <td class="num">${f.marge_cible !== null ? fmt(f.marge_cible, 1) + ' %' : '-'}</td>
+        <td class="num">${f.demarque_taux !== null ? fmt(f.demarque_taux, 1) + ' %' : '-'}</td>
       </tr>`).join('')}
     </table></div>`;
   document.getElementById('fa2-enregistrer').onclick = async () => {
@@ -328,18 +354,18 @@ async function afficherOngletArticles(page) {
         <th class="num">Poids carton</th><th class="num">Volume</th><th class="num">Densité</th><th>UP</th>
         <th>Position</th><th class="num">Taux eff.</th><th>Complétude</th></tr>
         ${articles.map(a => `<tr class="cliquable" onclick="naviguer('#/article/${encodeURIComponent(a.code_interne)}')">
-          <td>${esc(a.code_interne)}</td><td>${esc(a.code_barres || '')}</td><td>${esc(a.libelle)}</td>
+          <td><a href="#/article/${encodeURIComponent(a.code_interne)}"><b>${esc(a.code_interne)}</b></a></td><td>${esc(a.code_barres || '')}</td><td><a href="#/article/${encodeURIComponent(a.code_interne)}">${esc(a.libelle)}</a></td>
           <td>${esc(a.famille_code || '')}</td><td class="num">${fmt(a.unites_par_carton)}</td>
-          <td class="num">${a.poids_brut_carton ? fmt(a.poids_brut_carton, 2) + ' kg' : '—'}</td>
-          <td class="num">${a.volume_carton ? fmt(a.volume_carton, 4) + ' m³' : '—'}</td>
-          <td class="num">${a.densite ? fmt(a.densite) : '—'}</td>
-          <td>${a.indicateur_up ? `<span class="badge ${a.indicateur_up === 'poids' ? 'bleu' : 'orange'}">${a.indicateur_up}</span>` : '—'}</td>
+          <td class="num">${a.poids_brut_carton ? fmt(a.poids_brut_carton, 2) + ' kg' : '-'}</td>
+          <td class="num">${a.volume_carton ? fmt(a.volume_carton, 4) + ' m³' : '-'}</td>
+          <td class="num">${a.densite ? fmt(a.densite) : '-'}</td>
+          <td>${a.indicateur_up ? `<span class="badge ${a.indicateur_up === 'poids' ? 'bleu' : 'orange'}">${a.indicateur_up}</span>` : '-'}</td>
           <td>${esc(a.position_tarifaire || '')}</td>
-          <td class="num">${a.taux_effectif_constate ? fmt(a.taux_effectif_constate, 1) + ' %' : '—'}</td>
+          <td class="num">${a.taux_effectif_constate ? fmt(a.taux_effectif_constate, 1) + ' %' : '-'}</td>
           <td>${a.complet ? '<span class="badge vert">complète</span>' : `<span class="badge rouge" title="${esc(a.donnees_manquantes.join(', '))}">${a.donnees_manquantes.length} manquante(s)</span>`}</td>
         </tr>`).join('') || '<tr><td colspan="12">Aucun article.</td></tr>'}
       </table></div>
-      <p class="petite-note">${articles.length} article(s) affiché(s) — limite 500.</p>`;
+      <p class="petite-note">${articles.length} article(s) affiché(s) · limite 500.</p>`;
   }
   document.getElementById('a-chercher').onclick = charger;
   document.getElementById('a-recherche').addEventListener('keydown', e => { if (e.key === 'Enter') charger(); });
@@ -389,7 +415,7 @@ async function vueFicheArticle(page, args) {
 
   page.innerHTML = `
     <h1>${nouveau ? 'Nouvel article' : esc(a.libelle)}</h1>
-    <p class="sous-titre">${nouveau ? '' : 'Code ' + esc(a.code_interne) + (a.complet ? '' : ' — <span class="badge rouge">données manquantes : ' + esc((a.donnees_manquantes || []).join(', ')) + '</span>')}</p>
+    <p class="sous-titre">${nouveau ? '' : 'Code ' + esc(a.code_interne) + (a.complet ? '' : ' · <span class="badge rouge">données manquantes : ' + esc((a.donnees_manquantes || []).join(', ')) + '</span>')}</p>
     <div id="fa-msg"></div>
     <div class="carte">
       <h3>Identification</h3>
@@ -398,16 +424,16 @@ async function vueFicheArticle(page, args) {
         ${champ('fa-cb', 'Code barres (EAN/UPC)', a.code_barres)}
         ${champ('fa-libelle', 'Libellé long *', a.libelle, 'text', 'style="min-width:300px"')}
         ${champ('fa-libelle-court', 'Libellé court (caisse)', a.libelle_court)}
-        ${sel('fa-famille', 'Famille', [['', '—']].concat(familles.map(f => [f.code, f.code + ' — ' + f.libelle])), a.famille_code)}
+        ${sel('fa-famille', 'Famille', [['', '-']].concat(familles.map(f => [f.code, f.code + ' · ' + f.libelle])), a.famille_code)}
         ${champ('fa-marque', 'Marque', a.marque)}
-        ${sel('fa-type-marque', 'Type de marque', [['', '—'], ['nationale', 'Marque nationale'], ['propre', 'Marque propre'], ['premier_prix', 'Premier prix']], a.type_marque)}
+        ${sel('fa-type-marque', 'Type de marque', [['', '-'], ['nationale', 'Marque nationale'], ['propre', 'Marque propre'], ['premier_prix', 'Premier prix']], a.type_marque)}
         ${sel('fa-statut', 'Statut', [['en_creation', 'En création'], ['actif', 'Actif'], ['en_arret', 'En arrêt'], ['arrete', 'Arrêté'], ['saisonnier', 'Saisonnier']], a.statut || 'actif')}
-        ${sel('fa-fournisseur', 'Fournisseur principal', [['', '—']].concat(fournisseurs.map(f => [f.code, f.code + ' — ' + f.nom])), a.fournisseur_code)}
+        ${sel('fa-fournisseur', 'Fournisseur principal', [['', '-']].concat(fournisseurs.map(f => [f.code, f.code + ' · ' + f.nom])), a.fournisseur_code)}
         ${champ('fa-ref-fourn', 'Référence fournisseur', a.reference_fournisseur)}
       </div>
     </div>
     <div class="carte">
-      <h3>Logistique <span class="petite-note">— volume calculé depuis les dimensions, densité et unité payante déduites</span></h3>
+      <h3>Logistique <span class="petite-note">- volume calculé depuis les dimensions, densité et unité payante déduites</span></h3>
       <div class="ligne-champs">
         ${champ('fa-upc', 'Unités / carton', a.unites_par_carton, 'number')}
         ${champ('fa-pnu', 'Poids net unitaire (kg)', a.poids_net_unitaire, 'number', 'step="0.001"')}
@@ -417,7 +443,7 @@ async function vueFicheArticle(page, args) {
         ${champ('fa-haut', 'Hauteur carton (cm)', a.hauteur_carton, 'number', 'step="0.1"')}
         ${champ('fa-vol', 'Volume carton (m³)', a.volume_carton, 'number', 'step="0.00001"')}
       </div>
-      ${!nouveau && a.densite ? `<p>Densité : <b>${fmt(a.densite)} kg/m³</b> — l'unité payante retenue pour le fret est le <span class="badge ${a.indicateur_up === 'poids' ? 'bleu' : 'orange'}">${a.indicateur_up}</span></p>` : ''}
+      ${!nouveau && a.densite ? `<p>Densité : <b>${fmt(a.densite)} kg/m³</b> · l'unité payante retenue pour le fret est le <span class="badge ${a.indicateur_up === 'poids' ? 'bleu' : 'orange'}">${a.indicateur_up}</span></p>` : ''}
     </div>
     <div class="carte">
       <h3>Douane &amp; fiscalité</h3>
@@ -434,8 +460,8 @@ async function vueFicheArticle(page, args) {
       <h3>Commercial</h3>
       <div class="ligne-champs">
         ${champ('fa-marge', 'Marge cible (%, surcharge famille)', a.marge_cible, 'number', 'step="0.1"')}
-        ${sel('fa-role', "Rôle dans l'assortiment", [['', '—'], ['appel', "Produit d'appel"], ['marge', 'Produit de marge'], ['gamme', 'Produit de gamme']], a.role_assortiment)}
-        ${sel('fa-sensibilite', 'Sensibilité prix', [['', '—'], ['elevee', 'Élevée'], ['moyenne', 'Moyenne'], ['faible', 'Faible']], a.sensibilite_prix)}
+        ${sel('fa-role', "Rôle dans l'assortiment", [['', '-'], ['appel', "Produit d'appel"], ['marge', 'Produit de marge'], ['gamme', 'Produit de gamme']], a.role_assortiment)}
+        ${sel('fa-sensibilite', 'Sensibilité prix', [['', '-'], ['elevee', 'Élevée'], ['moyenne', 'Moyenne'], ['faible', 'Faible']], a.sensibilite_prix)}
         ${sel('fa-arbitrage', "Mode d'arbitrage prix", [['', 'Selon politique'], ['marge', 'Marge prioritaire'], ['marche', 'Marché prioritaire'], ['encadre', 'Encadré'], ['alignement', 'Alignement strict'], ['manuel', 'Manuel']], a.mode_arbitrage)}
       </div>
     </div>
@@ -445,11 +471,11 @@ async function vueFicheArticle(page, args) {
     </div>
     ${!nouveau ? `
     <div class="carte" id="fa-zone-fournisseurs">
-      <h3>Fournisseurs de l'article <span class="petite-note">— plusieurs fournisseurs possibles, un principal (F-M1-08) ; comparaison au meilleur prix converti (F-M3-07)</span></h3>
+      <h3>Fournisseurs de l'article <span class="petite-note">- plusieurs fournisseurs possibles, un principal (F-M1-08) ; comparaison au meilleur prix converti (F-M3-07)</span></h3>
       <div id="fa-comparaison">Chargement…</div>
       <h3>Rattacher un fournisseur (nouvelle condition d'achat)</h3>
       <div class="ligne-champs">
-        <label class="champ">Fournisseur<select id="ca-fournisseur">${fournisseurs.map(f => `<option value="${esc(f.code)}">${esc(f.code)} — ${esc(f.nom)}</option>`).join('')}</select></label>
+        <label class="champ">Fournisseur<select id="ca-fournisseur">${fournisseurs.map(f => `<option value="${esc(f.code)}">${esc(f.code)} · ${esc(f.nom)}</option>`).join('')}</select></label>
         <label class="champ">Prix d'achat *<input id="ca-prix" type="number" step="0.0001" style="width:110px"></label>
         <label class="champ">Devise<input id="ca-devise" value="XOF" style="width:70px"></label>
         <label class="champ">Remise (%)<input id="ca-remise" type="number" step="0.1" value="0" style="width:80px"></label>
@@ -463,10 +489,10 @@ async function vueFicheArticle(page, args) {
     </div>
     <div class="deux-colonnes">
       <div class="carte">
-        <h3>Codes barres secondaires <span class="petite-note">— lot, unité consommateur, appariements (F-M1-12)</span></h3>
+        <h3>Codes barres secondaires <span class="petite-note">- lot, unité consommateur, appariements (F-M1-12)</span></h3>
         <div class="table-defilante"><table>
           <tr><th>Code barres</th><th>Description</th><th></th></tr>
-          <tr><td><b>${esc(a.code_barres || '—')}</b></td><td>Code principal</td><td></td></tr>
+          <tr><td><b>${esc(a.code_barres || '-')}</b></td><td>Code principal</td><td></td></tr>
           ${(a.codes_barres_secondaires || []).map(cb => `<tr><td>${esc(cb.code_barres)}</td><td>${esc(cb.description || '')}</td>
             <td><button class="petit danger" onclick="supprCodeBarres('${esc(cb.code_barres)}')">✕</button></td></tr>`).join('')}
         </table></div>
@@ -492,7 +518,7 @@ async function vueFicheArticle(page, args) {
         <div class="actions-page"><button class="petit secondaire" id="fa-photo-ajouter">⬆ Ajouter une photo ou un document</button></div>
       </div>
       <div class="carte">
-        <h3>Articles liés <span class="petite-note">— lot, unité consommateur, remplacement, variante (F-M1-12, F-M1-15)</span></h3>
+        <h3>Articles liés <span class="petite-note">- lot, unité consommateur, remplacement, variante (F-M1-12, F-M1-15)</span></h3>
         <div class="table-defilante"><table>
           <tr><th>Type</th><th>Article</th><th>Précision</th><th></th></tr>
           ${(a.liens || []).map(l => `<tr>
@@ -608,7 +634,7 @@ async function vueFicheArticle(page, args) {
         });
         const select = document.getElementById('ca-fournisseur');
         const codeF = val('nf-code').toUpperCase();
-        select.insertAdjacentHTML('beforeend', `<option value="${esc(codeF)}">${esc(codeF)} — ${esc(val('nf-nom'))}</option>`);
+        select.insertAdjacentHTML('beforeend', `<option value="${esc(codeF)}">${esc(codeF)} · ${esc(val('nf-nom'))}</option>`);
         select.value = codeF;
         document.getElementById('ca-devise').value = val('nf-devise').toUpperCase() || 'XOF';
         document.getElementById('ca-nouveau-zone').innerHTML = '';
@@ -629,7 +655,7 @@ async function vueFicheArticle(page, args) {
     document.getElementById('fa-suggestions').innerHTML = `
       <div class="message info">Positions proches du libellé (cliquer pour retenir) :<br>
       ${suggestions.map(s => `<button class="petit secondaire" style="margin:3px" onclick="retenirPosition('${esc(s.code)}')">
-        ${esc(s.code)} — ${esc(s.libelle)} (DD ${fmt(s.taux_dd, 1)} %${s.pertinence ? ', pertinence ' + fmt(Number(s.pertinence) * 100, 0) + ' %' : ''})</button>`).join('')}</div>`;
+        ${esc(s.code)} · ${esc(s.libelle)} (DD ${fmt(s.taux_dd, 1)} %${s.pertinence ? ', pertinence ' + fmt(Number(s.pertinence) * 100, 0) + ' %' : ''})</button>`).join('')}</div>`;
   };
   window.retenirPosition = codePos => {
     document.getElementById('fa-position').value = codePos;
@@ -753,10 +779,10 @@ async function vueDouane(page) {
         try {
           const r = await api('/douane/simulation', { method: 'POST', body: { valeur_en_douane: val('s-vd'), position_tarifaire: val('s-pos'), origine: val('s-ori'), date: val('s-date') || null } });
           document.getElementById('s-resultat').innerHTML = `
-            ${r.position ? `<p>Position <b>${esc(r.position.code)}</b> — ${esc(r.position.libelle)} (droit de douane ${fmt(r.position.taux_dd, 1)} %)</p>` : '<p class="message info">Position inconnue du référentiel : droit de douane à 0 %, seules les taxes à taux fixe sont calculées.</p>'}
+            ${r.position ? `<p>Position <b>${esc(r.position.code)}</b> · ${esc(r.position.libelle)} (droit de douane ${fmt(r.position.taux_dd, 1)} %)</p>` : '<p class="message info">Position inconnue du référentiel : droit de douane à 0 %, seules les taxes à taux fixe sont calculées.</p>'}
             <div class="table-defilante"><table>
               <tr><th>Taxe</th><th class="num">Base</th><th class="num">Taux</th><th class="num">Montant</th><th>Traitement</th></tr>
-              ${r.lignes.map(l => `<tr><td>${esc(l.code)} — ${esc(l.libelle)}</td><td class="num">${fcfa(l.base)}</td><td class="num">${fmt(l.taux, 2)} %</td><td class="num">${fcfa(l.montant)}</td>
+              ${r.lignes.map(l => `<tr><td>${esc(l.code)} · ${esc(l.libelle)}</td><td class="num">${fcfa(l.base)}</td><td class="num">${fmt(l.taux, 2)} %</td><td class="num">${fcfa(l.montant)}</td>
                 <td>${l.traitement === 'cout' ? '<span class="badge orange">coût, incorporé au stock</span>' : '<span class="badge vert">créance sur l\'État</span>'}</td></tr>`).join('')}
               <tr><td><b>Total liquidé</b></td><td></td><td></td><td class="num"><b>${fcfa(r.total)}</b></td><td></td></tr>
               <tr><td>dont coût (capitalisé)</td><td></td><td></td><td class="num">${fcfa(r.total_cout)}</td><td></td></tr>
@@ -795,7 +821,7 @@ async function vueDouane(page) {
     } else if (o === 'taxes') {
       const taxes = await api('/douane/taxes');
       c.innerHTML = `
-        <div class="message info">La distinction coût / créance sur l'État est portée par le paramétrage de chaque taxe — règle la plus critique de la plateforme (CDC §6.3). La base est exprimée en composants : VD (valeur en douane) et codes des taxes déjà calculées, séparés par « + ».</div>
+        <div class="message info">La distinction coût / créance sur l'État est portée par le paramétrage de chaque taxe · règle la plus critique de la plateforme (CDC §6.3). La base est exprimée en composants : VD (valeur en douane) et codes des taxes déjà calculées, séparés par « + ».</div>
         <div class="table-defilante"><table>
           <tr><th class="num">Ordre</th><th>Code</th><th>Libellé</th><th class="num">Taux</th><th>Base de calcul</th><th>Traitement</th><th>Actif</th></tr>
           ${taxes.map(t => `<tr><td class="num">${t.ordre}</td><td><b>${esc(t.code)}</b></td><td>${esc(t.libelle)}</td>
@@ -867,7 +893,7 @@ async function vueDossiers(page) {
       <div class="ligne-champs">
         <label class="champ">Référence *<input id="do-ref" placeholder="IMP-2026-001"></label>
         <label class="champ">Libellé<input id="do-libelle" style="min-width:220px"></label>
-        <label class="champ">Fournisseur<select id="do-fourn"><option value="">—</option>${fournisseurs.map(f => `<option value="${esc(f.code)}">${esc(f.nom)}</option>`).join('')}</select></label>
+        <label class="champ">Fournisseur<select id="do-fourn"><option value="">-</option>${fournisseurs.map(f => `<option value="${esc(f.code)}">${esc(f.nom)}</option>`).join('')}</select></label>
         <label class="champ">Devise facture<input id="do-devise" value="XOF" style="width:80px"></label>
         <label class="champ">Taux de change → F CFA<input id="do-tc" type="number" step="0.0001" value="1"></label>
         <label class="champ">Incoterm<input id="do-incoterm" placeholder="FOB / CIF…" style="width:90px"></label>
@@ -880,7 +906,7 @@ async function vueDossiers(page) {
     <div class="table-defilante"><table>
       <tr><th>Référence</th><th>Libellé</th><th>Fournisseur</th><th>Statut</th><th class="num">Lignes</th><th class="num">Total facture (devise)</th><th>Créé le</th></tr>
       ${dossiers.map(d => `<tr class="cliquable" onclick="naviguer('#/dossier/${d.id}')">
-        <td><b>${esc(d.reference)}</b></td><td>${esc(d.libelle || '')}</td><td>${esc(d.fournisseur_nom || '')}</td>
+        <td><a href="#/dossier/${d.id}"><b>${esc(d.reference)}</b></a></td><td>${esc(d.libelle || '')}</td><td>${esc(d.fournisseur_nom || '')}</td>
         <td>${badgeStatutDossier(d.statut)}</td><td class="num">${fmt(d.nb_lignes)}</td>
         <td class="num">${fmt(d.total_devise, 2)} ${esc(d.devise)}</td><td>${dateFr(d.date_creation)}</td></tr>`).join('') || '<tr><td colspan="7">Aucun dossier.</td></tr>'}
     </table></div>`;
@@ -901,8 +927,8 @@ async function vueDossierDetail(page, args) {
   const statuts = [['ouvert', 'Ouvert'], ['titres_obtenus', 'Titres obtenus'], ['embarque', 'Embarqué'], ['declare', 'Déclaré'], ['receptionne', 'Réceptionné'], ['cloture', 'Clôturé'], ['revise', 'Révisé']];
   page.innerHTML = `
     <h1>Dossier ${esc(d.reference)} ${badgeStatutDossier(d.statut)}</h1>
-    <p class="sous-titre">${esc(d.libelle || '')} — ${esc(d.fournisseur_nom || 'fournisseur non renseigné')} — devise ${esc(d.devise)} (taux ${fmt(d.taux_change, 4)})
-      ${d.poids_total ? ' — poids BL ' + fmt(d.poids_total) + ' kg' : ''}${d.volume_total ? ' — volume BL ' + fmt(d.volume_total, 2) + ' m³' : ''}</p>
+    <p class="sous-titre">${esc(d.libelle || '')} · ${esc(d.fournisseur_nom || 'fournisseur non renseigné')} · devise ${esc(d.devise)} (taux ${fmt(d.taux_change, 4)})
+      ${d.poids_total ? ' · poids BL ' + fmt(d.poids_total) + ' kg' : ''}${d.volume_total ? ' · volume BL ' + fmt(d.volume_total, 2) + ' m³' : ''}</p>
     <div class="actions-page">
       <span class="petite-note">Faire avancer le statut :</span>
       ${statuts.map(([s, l]) => `<button class="petit ${d.statut === s ? '' : 'secondaire'}" onclick="changerStatut(${id},'${s}')">${l}</button>`).join('')}
@@ -939,7 +965,7 @@ async function vueDossierDetail(page, args) {
             <td class="num">${fmt(l.prix_unitaire_devise, 2)}</td><td class="num">${fmt(l.montant_devise, 2)}</td>
             <td class="num">${l.poids_brut !== null ? fmt(l.poids_brut, 1) : '<span class="estime">estimé</span>'}</td>
             <td class="num">${l.volume !== null ? fmt(l.volume, 3) : '<span class="estime">estimé</span>'}</td>
-            <td class="num">${l.declaration_rang ?? '<span class="badge rouge">—</span>'}</td>
+            <td class="num">${l.declaration_rang ?? '<span class="badge rouge">-</span>'}</td>
             <td><button class="petit danger" onclick="supprLigne(${l.id})">✕</button></td>
           </tr>`).join('') || '<tr><td colspan="12">Aucune ligne. Importez la facture fournisseur ou saisissez les lignes.</td></tr>'}
         </table></div>
@@ -958,7 +984,7 @@ async function vueDossierDetail(page, args) {
           </div>
         </div>
         <div class="carte">
-          <h3>Importer la facture fournisseur (CSV) — appariement automatique par code barres</h3>
+          <h3>Importer la facture fournisseur (CSV) · appariement automatique par code barres</h3>
           <p class="petite-note">Colonnes : code_barres (ou code_interne);libelle;quantite;prix_unitaire;nb_cartons;poids_brut;volume;declaration_rang</p>
           <textarea id="l-csv"></textarea>
           <div class="actions-page">
@@ -1075,8 +1101,8 @@ async function vueDossierDetail(page, args) {
           const taxes = a.taxes || [];
           const totalCout = taxes.reduce((s, t) => s + Number(t.montant), 0);
           return `<div class="carte">
-            <h3>Article n°${a.rang} — position ${esc(a.position_tarifaire)} ${a.origine ? '(origine ' + esc(a.origine) + ')' : ''}</h3>
-            <p>${esc(a.designation || '')} — valeur CAF déclarée : <b>${fcfa(a.valeur_caf)}</b>${a.poids_brut ? ' — poids ' + fmt(a.poids_brut) + ' kg' : ''}</p>
+            <h3>Article n°${a.rang} · position ${esc(a.position_tarifaire)} ${a.origine ? '(origine ' + esc(a.origine) + ')' : ''}</h3>
+            <p>${esc(a.designation || '')} · valeur CAF déclarée : <b>${fcfa(a.valeur_caf)}</b>${a.poids_brut ? ' · poids ' + fmt(a.poids_brut) + ' kg' : ''}</p>
             ${taxes.length ? `<div class="table-defilante"><table>
               <tr><th>Taxe</th><th class="num">Base</th><th class="num">Taux</th><th class="num">Montant</th><th>Source</th><th class="num">Montant réel</th></tr>
               ${taxes.map(t => `<tr><td>${esc(t.code_taxe)}</td><td class="num">${fcfa(t.base)}</td><td class="num">${fmt(t.taux, 2)} %</td>
@@ -1125,7 +1151,7 @@ async function vueDossierDetail(page, args) {
             ${ecarts.map(x => `<tr><td>n°${x.rang}</td><td>${esc(x.position_tarifaire)}</td>
               <td class="num">${fcfa(x.total_simule)}</td><td class="num">${fcfa(x.total_retenu)}</td>
               <td class="num">${fcfa(x.ecart_total)}</td>
-              <td class="num"><span class="badge ${Math.abs(x.ecart_pct || 0) > 3 ? 'rouge' : 'vert'}">${x.ecart_pct !== null ? fmt(x.ecart_pct, 1) + ' %' : '—'}</span></td></tr>`).join('') || '<tr><td colspan="6">Aucun article de déclaration.</td></tr>'}
+              <td class="num"><span class="badge ${Math.abs(x.ecart_pct || 0) > 3 ? 'rouge' : 'vert'}">${x.ecart_pct !== null ? fmt(x.ecart_pct, 1) + ' %' : '-'}</span></td></tr>`).join('') || '<tr><td colspan="6">Aucun article de déclaration.</td></tr>'}
           </table></div>
           <p class="petite-note">Un écart durable signale un barème de taux à mettre à jour ou une divergence de classement tarifaire (F-M2-09).</p></div>`;
       };
@@ -1266,12 +1292,12 @@ async function vueDossierDetail(page, args) {
               <div class="message ok">${r.revisions.length} référence(s) révisée(s).</div>
               <div class="table-defilante"><table>
                 <tr><th>Article</th><th class="num">Coût avant</th><th class="num">Coût après</th><th class="num">Écart unitaire</th><th class="num">Ajust. stock</th><th class="num">Ajust. charge</th></tr>
-                ${r.revisions.map(x => `<tr><td>${esc(x.article_code || '—')}</td>
+                ${r.revisions.map(x => `<tr><td>${esc(x.article_code || '-')}</td>
                   <td class="num">${fmt(x.cout_unitaire_avant, 2)}</td><td class="num">${fmt(x.cout_unitaire_apres, 2)}</td>
                   <td class="num"><span class="badge ${x.delta_unitaire > 0 ? 'rouge' : 'vert'}">${x.delta_unitaire > 0 ? '+' : ''}${fmt(x.delta_unitaire, 2)}</span></td>
                   <td class="num">${fcfa(x.ajustement_stock)}</td><td class="num">${fcfa(x.ajustement_charge)}</td></tr>`).join('')}
               </table></div>
-              ${r.alertes_prix.length ? `<div class="message erreur"><b>${r.alertes_prix.length} tarif(s) publié(s) passent sous le plancher de marge</b> — la direction a été notifiée :<br>${r.alertes_prix.map(a => `${esc(a.article_code)} (${esc(a.format_code)}) : taux de marque ${fmt(a.taux_marque_apres_revision, 1)} %`).join('<br>')}</div>` : ''}`;
+              ${r.alertes_prix.length ? `<div class="message erreur"><b>${r.alertes_prix.length} tarif(s) publié(s) passent sous le plancher de marge</b> · la direction a été notifiée :<br>${r.alertes_prix.map(a => `${esc(a.article_code)} (${esc(a.format_code)}) : taux de marque ${fmt(a.taux_marque_apres_revision, 1)} %`).join('<br>')}</div>` : ''}`;
             const dd = await api('/dossiers/' + id);
             document.getElementById('r-tableau').innerHTML = tableauResultats(dd.resultats);
           }
@@ -1280,7 +1306,7 @@ async function vueDossierDetail(page, args) {
       document.getElementById('r-calculer').onclick = async () => {
         try {
           const r = await api(`/dossiers/${id}/calculer`, { method: 'POST' });
-          let html = `<div class="message ok">Calcul effectué. Coefficient moyen : <b>${fmt(r.totaux.coefficient_moyen, 3)}</b> — coût total ${fcfa(r.totaux.cout_total)} pour ${fcfa(r.totaux.valeur_achat)} d'achats. Créances sur l'État : ${fcfa(r.totaux.taxes_creance)}. ${r.articles_enrichis} fiche(s) article enrichie(s).</div>`;
+          let html = `<div class="message ok">Calcul effectué. Coefficient moyen : <b>${fmt(r.totaux.coefficient_moyen, 3)}</b> · coût total ${fcfa(r.totaux.cout_total)} pour ${fcfa(r.totaux.valeur_achat)} d'achats. Créances sur l'État : ${fcfa(r.totaux.taxes_creance)}. ${r.articles_enrichis} fiche(s) article enrichie(s).</div>`;
           if (r.alertes.length) html += `<div class="message erreur"><b>Alertes :</b><br>${r.alertes.map(esc).join('<br>')}</div>`;
           if (r.charges_periode.length) html += `<div class="message info">Charges de période (non capitalisées) : ${r.charges_periode.map(x => esc(x.libelle || x.nature) + ' ' + fcfa(x.montant)).join(', ')}</div>`;
           document.getElementById('r-msg').innerHTML = html;
@@ -1301,11 +1327,11 @@ async function vueDossierDetail(page, args) {
       ${resultats.map(x => {
         const det = x.detail || {};
         return `<tr>
-          <td>${esc(x.article_code || '—')}</td><td class="num">${fmt(x.quantite)}</td>
+          <td>${esc(x.article_code || '-')}</td><td class="num">${fmt(x.quantite)}</td>
           <td class="num">${fcfa(x.prix_achat_total)}</td><td class="num">${fcfa(x.cout_total)}</td>
           <td class="num"><b>${fmt(x.cout_unitaire, 2)}</b></td>
           <td class="num">${fmt(x.coefficient, 3)}</td>
-          <td class="num">${x.taux_effectif !== null ? fmt(x.taux_effectif, 1) + ' %' : '—'}</td>
+          <td class="num">${x.taux_effectif !== null ? fmt(x.taux_effectif, 1) + ' %' : '-'}</td>
           <td class="num">${fmt(x.unite_payante, 3)}</td>
           <td>${x.indicateur_up ? `<span class="badge ${x.indicateur_up === 'poids' ? 'bleu' : 'orange'}">${x.indicateur_up}</span>` : ''}${det.volume_estime ? ' <span class="estime">vol. estimé</span>' : ''}</td>
           <td><details><summary>composantes</summary><ul>
@@ -1373,14 +1399,14 @@ async function vueTarification(page) {
     } else if (o === 'politiques') {
       const [pols, familles, formats] = await Promise.all([api('/tarification/politiques'), api('/referentiels/familles'), api('/tarification/formats')]);
       c.innerHTML = `
-        <div class="message info">Résolution : le niveau le plus fin l'emporte — article &gt; famille+format &gt; famille &gt; format &gt; défaut (20 %).</div>
+        <div class="message info">Résolution : le niveau le plus fin l'emporte · article &gt; famille+format &gt; famille &gt; format &gt; défaut (20 %).</div>
         <div class="table-defilante"><table>
           <tr><th>Famille</th><th>Format</th><th class="num">Taux de marque cible</th><th class="num">Plancher</th><th>Mode d'arbitrage</th><th class="num">Indice cible</th><th class="num">Encadrement</th><th></th></tr>
           ${pols.map(p => `<tr><td>${esc(p.famille_code || 'toutes')}</td><td>${esc(p.format_code || 'tous')}</td>
             <td class="num">${fmt(p.taux_marque_cible, 1)} %</td><td class="num">${fmt(p.taux_marque_plancher, 1)} %</td>
             <td><span class="badge bleu">${esc(p.mode_arbitrage)}</span></td>
-            <td class="num">${p.indice_cible ? fmt(p.indice_cible, 1) : '—'}</td>
-            <td class="num">${p.encadrement_pct ? '±' + fmt(p.encadrement_pct, 1) + ' %' : '—'}</td>
+            <td class="num">${p.indice_cible ? fmt(p.indice_cible, 1) : '-'}</td>
+            <td class="num">${p.encadrement_pct ? '±' + fmt(p.encadrement_pct, 1) + ' %' : '-'}</td>
             <td><button class="petit danger" onclick="supprPol(${p.id})">✕</button></td></tr>`).join('') || '<tr><td colspan="8">Aucune politique : le défaut (marge 20 %) s\'applique.</td></tr>'}
         </table></div>
         <div class="carte"><h3>Ajouter / modifier une politique</h3>
@@ -1409,7 +1435,7 @@ async function vueTarification(page) {
       const [familles, formats] = await Promise.all([api('/referentiels/familles'), api('/tarification/formats')]);
       c.innerHTML = `
         <div class="carte">
-          <h3>Générer des propositions <span class="petite-note">— coût de mise en rayon → marge cible → confrontation au marché</span></h3>
+          <h3>Générer des propositions <span class="petite-note">- coût de mise en rayon → marge cible → confrontation au marché</span></h3>
           <div class="ligne-champs">
             <label class="champ">Article (code, vide = tous)<input id="pr-article"></label>
             <label class="champ">Famille<select id="pr-famille"><option value="">toutes</option>${familles.map(f => `<option value="${esc(f.code)}">${esc(f.code)}</option>`).join('')}</select></label>
@@ -1441,10 +1467,10 @@ async function vueTarification(page) {
                 <td>${esc(p.format_code)}</td>
                 <td class="num">${fmt(p.cout_debarque, 1)}</td><td class="num">${fmt(p.cout_mise_en_rayon, 1)}</td>
                 <td class="num">${fcfa(p.prix_ttc_theorique)}</td>
-                <td class="num">${p.prix_marche ? fcfa(p.prix_marche) : '—'}</td>
+                <td class="num">${p.prix_marche ? fcfa(p.prix_marche) : '-'}</td>
                 <td class="num"><b>${fcfa(p.prix_ttc_propose)}</b></td>
-                <td class="num">${p.taux_marque !== null ? fmt(p.taux_marque, 1) + ' %' : '—'}</td>
-                <td class="num">${p.indice_vs_marche ? fmt(p.indice_vs_marche, 1) : '—'}</td>
+                <td class="num">${p.taux_marque !== null ? fmt(p.taux_marque, 1) + ' %' : '-'}</td>
+                <td class="num">${p.indice_vs_marche ? fmt(p.indice_vs_marche, 1) : '-'}</td>
                 <td><span class="badge ${p.contrainte === 'marge' ? 'bleu' : p.contrainte === 'marche' ? 'orange' : 'rouge'}">${esc(p.contrainte)}</span></td>
                 <td>${p.alertes.map(a => `<span class="badge rouge">${esc(a)}</span>`).join(' ')}</td>
               </tr>`).join('') || '<tr><td colspan="12">Aucune proposition.</td></tr>'}
@@ -1457,7 +1483,7 @@ async function vueTarification(page) {
               method: 'POST',
               body: { tarifs: choisis.map(p => ({ article_code: p.article_code, format_code: p.format_code, prix_ttc: p.prix_ttc_propose, cout_mise_en_rayon: p.cout_mise_en_rayon, taux_marque: p.taux_marque, contrainte: p.contrainte, alertes: p.alertes })) }
             });
-            message('pr-msg', 'ok', `${rr.crees} proposition(s) enregistrée(s) — à valider dans l'onglet « Tarifs & validation ».`);
+            message('pr-msg', 'ok', `${rr.crees} proposition(s) enregistrée(s) · à valider dans l'onglet « Tarifs & validation ».`);
           };
         } catch (e) { message('pr-msg', 'erreur', e.message); }
       };
@@ -1467,7 +1493,7 @@ async function vueTarification(page) {
       const estDirection = etat.utilisateur.role === 'admin' || etat.utilisateur.role === 'direction';
       c.innerHTML = `
         <div class="carte">
-          <h3>Règle de validation par seuils <span class="petite-note">— au-delà, la proposition passe en « a_valider » et exige la direction</span></h3>
+          <h3>Règle de validation par seuils <span class="petite-note">- au-delà, la proposition passe en « a_valider » et exige la direction</span></h3>
           <div class="ligne-champs">
             <label class="champ">Taux de marque minimal (%)<input id="rg-marque" type="number" step="0.1" value="${regle && regle.taux_marque_min !== null ? esc(regle.taux_marque_min) : ''}"></label>
             <label class="champ">Écart max avec le tarif publié (%)<input id="rg-ecart" type="number" step="0.1" value="${regle && regle.ecart_prix_max_pct !== null ? esc(regle.ecart_prix_max_pct) : ''}"></label>
@@ -1488,7 +1514,7 @@ async function vueTarification(page) {
             <td>${['propose', 'valide'].includes(t.statut) ? `<input type="checkbox" class="ta-coche" value="${t.id}">` : ''}</td>
             <td>${esc(t.article_code)}<br><span class="petite-note">${esc(t.article_libelle)}</span></td>
             <td>${esc(t.format_code)}</td><td class="num"><b>${fcfa(t.prix_ttc)}</b></td><td class="num">${fmt(t.prix_ht, 1)}</td>
-            <td class="num">${t.taux_marque !== null ? fmt(t.taux_marque, 1) + ' %' : '—'}</td>
+            <td class="num">${t.taux_marque !== null ? fmt(t.taux_marque, 1) + ' %' : '-'}</td>
             <td>${t.contrainte ? `<span class="badge gris">${esc(t.contrainte)}</span>` : ''}</td>
             <td><span class="badge ${badge(t.statut)}">${esc(t.statut)}</span>
               ${t.statut === 'a_valider' && estDirection ? `<button class="petit" onclick="validerTarif(${t.id})">Valider</button>` : ''}</td>
@@ -1524,7 +1550,7 @@ async function vueTarification(page) {
             .pied { display: flex; justify-content: space-between; font-size: 9px; color: #444; margin-top: 1mm; }
             @media print { .noprint { display: none; } }
           </style></head><body>
-          <p class="noprint"><button onclick="window.print()">Imprimer</button> ${publies.length} étiquette(s) — format ${new Date().toLocaleDateString('fr-FR')}</p>
+          <p class="noprint"><button onclick="window.print()">Imprimer</button> ${publies.length} étiquette(s) · format ${new Date().toLocaleDateString('fr-FR')}</p>
           <div class="grille">
           ${publies.map(t => `<div class="etiquette">
             <div class="libelle">${esc(t.article_libelle)}</div>
@@ -1552,7 +1578,7 @@ async function vueTarification(page) {
           <tr><th>Libellé</th><th>Cible</th><th>Format</th><th class="num">Remise</th><th>Période</th><th class="num">Marge min</th><th>Statut</th><th></th></tr>
           ${promos.map(p => `<tr>
             <td><b>${esc(p.libelle)}</b></td>
-            <td>${p.article_code ? esc(p.article_code) + (p.article_libelle ? ' — ' + esc(p.article_libelle) : '') : 'famille ' + esc(p.famille_code || '')}</td>
+            <td>${p.article_code ? esc(p.article_code) + (p.article_libelle ? ' · ' + esc(p.article_libelle) : '') : 'famille ' + esc(p.famille_code || '')}</td>
             <td>${esc(p.format_code || 'tous')}</td>
             <td class="num">${fmt(p.taux_remise, 1)} %</td>
             <td>${dateFr(p.date_debut)} → ${dateFr(p.date_fin)}</td>
@@ -1569,7 +1595,7 @@ async function vueTarification(page) {
           <div class="ligne-champs">
             <label class="champ">Libellé<input id="pm-libelle" style="min-width:200px"></label>
             <label class="champ">Article (ou vide)<input id="pm-article"></label>
-            <label class="champ">Famille (ou vide)<select id="pm-famille"><option value="">—</option>${familles.map(f => `<option value="${esc(f.code)}">${esc(f.code)}</option>`).join('')}</select></label>
+            <label class="champ">Famille (ou vide)<select id="pm-famille"><option value="">-</option>${familles.map(f => `<option value="${esc(f.code)}">${esc(f.code)}</option>`).join('')}</select></label>
             <label class="champ">Format<select id="pm-format"><option value="">tous</option>${formats.map(f => `<option value="${esc(f.code)}">${esc(f.code)}</option>`).join('')}</select></label>
             <label class="champ">Remise (%)<input id="pm-remise" type="number" step="0.1"></label>
             <label class="champ">Du<input id="pm-debut" type="date"></label>
@@ -1589,7 +1615,7 @@ async function vueTarification(page) {
             <tr><th>Article</th><th>Format</th><th class="num">Prix normal</th><th class="num">Prix promo</th><th class="num">Taux de marque promo</th></tr>
             ${r.lignes.map(l => `<tr><td>${esc(l.article_code)}<br><span class="petite-note">${esc(l.libelle)}</span></td>
               <td>${esc(l.format_code)}</td><td class="num">${fcfa(l.prix_normal)}</td><td class="num"><b>${fcfa(l.prix_promo)}</b></td>
-              <td class="num">${l.taux_marque_promo !== null ? `<span class="badge ${l.marge_negative ? 'rouge' : l.sous_marge_min ? 'orange' : 'vert'}">${fmt(l.taux_marque_promo, 1)} %</span>` : '—'}</td></tr>`).join('') || '<tr><td colspan="5">Aucun tarif publié dans le périmètre de la promotion.</td></tr>'}
+              <td class="num">${l.taux_marque_promo !== null ? `<span class="badge ${l.marge_negative ? 'rouge' : l.sous_marge_min ? 'orange' : 'vert'}">${fmt(l.taux_marque_promo, 1)} %</span>` : '-'}</td></tr>`).join('') || '<tr><td colspan="5">Aucun tarif publié dans le périmètre de la promotion.</td></tr>'}
           </table></div></div>`;
       };
       document.getElementById('pm-creer').onclick = async () => {
@@ -1614,7 +1640,7 @@ async function vueTarification(page) {
         const r = await api(`/tarification/controles?format=${val('ct-format')}&ecart_max=${val('ct-ecart')}`);
         const types = { prix_au_kilo: 'Prix au kilo croissant avec la taille', ordre_de_gamme: 'Ordre de gamme inversé', ecart_formats: 'Écart excessif entre formats' };
         document.getElementById('ct-resultats').innerHTML = `
-          <div class="message ${r.anomalies.length ? 'erreur' : 'ok'}">${r.nb_tarifs_controles} tarif(s) contrôlé(s) — ${r.anomalies.length} anomalie(s).</div>
+          <div class="message ${r.anomalies.length ? 'erreur' : 'ok'}">${r.nb_tarifs_controles} tarif(s) contrôlé(s) · ${r.anomalies.length} anomalie(s).</div>
           ${r.anomalies.length ? `<div class="table-defilante"><table>
             <tr><th>Type</th><th>Anomalie</th></tr>
             ${r.anomalies.map(a => `<tr><td><span class="badge orange">${esc(types[a.type] || a.type)}</span></td><td>${esc(a.message)}</td></tr>`).join('')}
@@ -1651,7 +1677,7 @@ async function vueVeille(page) {
       c.innerHTML = `
         ${attente.length ? `<div class="message info">${attente.length} relevé(s) en attente de synchronisation. <button class="petit" id="rv-sync">Synchroniser maintenant</button></div>` : ''}
         <div class="carte">
-          <h3>Relevé de prix concurrent <span class="petite-note">— fonctionne hors connexion, synchronisation au retour du réseau</span></h3>
+          <h3>Relevé de prix concurrent <span class="petite-note">- fonctionne hors connexion, synchronisation au retour du réseau</span></h3>
           <div class="ligne-champs">
             <label class="champ">Code barres *<input id="rv-cb" placeholder="scanner ou saisir"></label>
             <button class="secondaire" id="rv-scanner" title="Lecture par la caméra">📷 Scanner</button>
@@ -1714,7 +1740,7 @@ async function vueVeille(page) {
         };
         try {
           const r = await api('/veille/releves', { method: 'POST', body: corps });
-          message('rv-msg', 'ok', r.apparie ? `Relevé enregistré et apparié à ${r.article_code}.` : 'Relevé enregistré — non apparié, à traiter dans la file d\'appariement.');
+          message('rv-msg', 'ok', r.apparie ? `Relevé enregistré et apparié à ${r.article_code}.` : 'Relevé enregistré · non apparié, à traiter dans la file d\'appariement.');
           document.getElementById('rv-cb').value = ''; document.getElementById('rv-prix').value = '';
         } catch (e) {
           if (e.statut === 409) {
@@ -1766,7 +1792,7 @@ async function vueVeille(page) {
     } else if (o === 'import') {
       c.innerHTML = `
         <div class="carte">
-          <h3>Import de relevés (format Annexe C — panel, collecte en ligne ou terrain)</h3>
+          <h3>Import de relevés (format Annexe C · panel, collecte en ligne ou terrain)</h3>
           <p class="petite-note">Colonnes : code_barres;enseigne;point_de_releve;date_releve;prix_ttc;type_prix;disponibilite;conditionnement;source;justificatif</p>
           <textarea id="vi-csv"></textarea>
           <div class="actions-page"><button id="vi-importer">Importer</button></div>
@@ -1796,7 +1822,7 @@ async function vueVeille(page) {
           <h2>Indice de prix par enseigne (base 100 = concurrent)</h2>
           <div class="grille kpi">
             ${ind.syntheses.map(s => `<div class="carte"><div class="valeur ${s.indice_moyen > 102 ? 'alerte-rouge' : ''}">${fmt(s.indice_moyen, 1)}${s.indice_pondere_ca !== null ? ` <span style="font-size:14px" title="Indice pondéré par le poids de chaque référence dans le chiffre d'affaires (90 jours)">(pondéré CA : ${fmt(s.indice_pondere_ca, 1)})</span>` : ''}</div>
-              <div class="libelle">${esc(s.enseigne)} — ${s.nb_references} référence(s) comparée(s)</div></div>`).join('') || '<p class="petite-note">Aucune comparaison possible : publiez des tarifs et enregistrez des relevés appariés.</p>'}
+              <div class="libelle">${esc(s.enseigne)} · ${s.nb_references} référence(s) comparée(s)</div></div>`).join('') || '<p class="petite-note">Aucune comparaison possible : publiez des tarifs et enregistrez des relevés appariés.</p>'}
           </div>
           <h2>Alertes d'écart concurrentiel (&gt; ${val('in-seuil')} %)</h2>
           <div class="table-defilante"><table>
@@ -1814,7 +1840,7 @@ async function vueVeille(page) {
               <td class="num">${fcfa(x.notre_prix)}</td><td>${esc(x.enseigne_nom || x.enseigne_code)}</td>
               <td class="num">${fcfa(x.prix_concurrent)}</td>
               <td class="num"><b>${fmt(x.indice, 1)}</b></td>
-              <td>${Number(x.age_jours) > 45 ? `<span class="badge rouge">${x.age_jours} j — périmé</span>` : `<span class="badge vert">${x.age_jours} j</span>`}</td></tr>`).join('') || '<tr><td colspan="6">Aucune donnée.</td></tr>'}
+              <td>${Number(x.age_jours) > 45 ? `<span class="badge rouge">${x.age_jours} j · périmé</span>` : `<span class="badge vert">${x.age_jours} j</span>`}</td></tr>`).join('') || '<tr><td colspan="6">Aucune donnée.</td></tr>'}
           </table></div>`;
       };
       document.getElementById('in-charger').onclick = charger;
@@ -1997,10 +2023,10 @@ async function vueMarges(page) {
           <td>${esc(l.famille || '')}</td><td class="num">${fmt(l.quantite_vendue)}</td>
           <td class="num">${fcfa(l.ca_ttc)}</td>
           <td class="num">${l.cout_unitaire !== null ? fmt(l.cout_unitaire, 1) : '<span class="badge rouge">inconnu</span>'}</td>
-          <td class="num">${l.marge_realisee !== null ? fcfa(l.marge_realisee) : '—'}</td>
-          <td class="num">${l.taux_marque_realise !== null ? fmt(l.taux_marque_realise, 1) + ' %' : '—'}</td>
-          <td class="num">${l.taux_marque_theorique !== null ? fmt(l.taux_marque_theorique, 1) + ' %' : '—'}</td>
-          <td class="num">${l.ecart_taux !== null ? `<span class="badge ${l.ecart_taux < -2 ? 'rouge' : l.ecart_taux > 2 ? 'vert' : 'gris'}">${l.ecart_taux > 0 ? '+' : ''}${fmt(l.ecart_taux, 1)}</span>` : '—'}</td>
+          <td class="num">${l.marge_realisee !== null ? fcfa(l.marge_realisee) : '-'}</td>
+          <td class="num">${l.taux_marque_realise !== null ? fmt(l.taux_marque_realise, 1) + ' %' : '-'}</td>
+          <td class="num">${l.taux_marque_theorique !== null ? fmt(l.taux_marque_theorique, 1) + ' %' : '-'}</td>
+          <td class="num">${l.ecart_taux !== null ? `<span class="badge ${l.ecart_taux < -2 ? 'rouge' : l.ecart_taux > 2 ? 'vert' : 'gris'}">${l.ecart_taux > 0 ? '+' : ''}${fmt(l.ecart_taux, 1)}</span>` : '-'}</td>
         </tr>`).join('') || '<tr><td colspan="9">Aucune vente importée sur la période.</td></tr>'}
       </table></div>
       <p class="petite-note">Un écart négatif signale une exécution en dessous de la politique : démarque non prévue, prix mal appliqué en caisse ou promotion non tracée.</p>`;
@@ -2015,7 +2041,7 @@ async function vueCompte(page) {
   const doitChanger = etat.utilisateur && etat.utilisateur.doit_changer_mdp;
   page.innerHTML = `
     <h1>Mon compte</h1>
-    <p class="sous-titre">${esc(etat.utilisateur?.email || '')} — rôle ${esc(etat.utilisateur?.role || '')}</p>
+    <p class="sous-titre">${esc(etat.utilisateur?.email || '')} · rôle ${esc(etat.utilisateur?.role || '')}</p>
     ${doitChanger ? '<div class="message erreur">Votre mot de passe initial doit être changé avant toute utilisation en conditions réelles.</div>' : ''}
     <div class="deux-colonnes">
       <div class="carte">

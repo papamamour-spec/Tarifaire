@@ -1,6 +1,6 @@
 'use strict';
 /*
- * Tarifaire — plateforme de gestion du prix de revient et de la politique tarifaire
+ * Tarifaire - plateforme de gestion du prix de revient et de la politique tarifaire
  * (commerce de détail, Sénégal / UEMOA). Point d'entrée du serveur.
  */
 const path = require('path');
@@ -91,7 +91,7 @@ app.listen(PORT, () => console.log(`Tarifaire à l'écoute sur le port ${PORT} (
       return;
     } catch (err) {
       erreurBase = err.message;
-      console.error('Échec d’initialisation de la base de données :', err.message, '— nouvel essai dans 10 s');
+      console.error('Échec d’initialisation de la base de données :', err.message, '- nouvel essai dans 10 s');
       await new Promise(r => setTimeout(r, 10000));
     }
   }

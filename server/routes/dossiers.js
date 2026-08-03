@@ -280,7 +280,7 @@ r.post('/:id/declaration-import/csv', exiger('import'), async (req, res) => {
   res.json({ importes: ok, rejets });
 });
 
-/* Saisie des montants réellement liquidés — ils priment sur la simulation (F-M2-04) */
+/* Saisie des montants réellement liquidés - ils priment sur la simulation (F-M2-04) */
 r.post('/:id/declaration/:daId/taxes-reelles', exiger('import'), async (req, res) => {
   const { taxes } = req.body || {};
   if (!Array.isArray(taxes)) return res.status(400).json({ erreur: 'Tableau de taxes requis : [{code_taxe, montant}]' });
@@ -376,7 +376,7 @@ r.post('/:id/calculer', exiger('import'), async (req, res) => {
 });
 
 /*
- * Lot 2 — Révision après facture tardive (UC10, F-M5-08).
+ * Lot 2 - Révision après facture tardive (UC10, F-M5-08).
  * À appeler après avoir ajouté le coût tardif : recalcule le dossier, compare aux coûts
  * précédents, ventile l'ajustement entre stock restant (ajustement de stock) et quantités
  * vendues (charge), et alerte sur les tarifs publiés passés sous le plancher de marge.
@@ -451,7 +451,7 @@ r.post('/:id/reviser', exiger('import'), async (req, res) => {
   res.json({ revisions, alertes_prix: alertesPrix, totaux: resultat.totaux });
 });
 
-/* Lot 2 — Provisions proposées depuis les barèmes appris (F-M5-07) */
+/* Lot 2 - Provisions proposées depuis les barèmes appris (F-M5-07) */
 r.get('/:id/provisions-proposees', async (req, res) => {
   res.json(await proposerProvisions(req.params.id));
 });
@@ -471,13 +471,13 @@ r.post('/:id/provisions-appliquer', exiger('import'), async (req, res) => {
   res.json({ ok: true, creees });
 });
 
-/* Lot 2 — Historique des révisions */
+/* Lot 2 - Historique des révisions */
 r.get('/:id/revisions', async (req, res) => {
   const { rows } = await query('SELECT * FROM revisions_cout WHERE dossier_id=$1 ORDER BY id DESC', [req.params.id]);
   res.json(rows);
 });
 
-/* Lot 3 — Fichier numérisé d'une pièce (F-M4-02) : téléversement et téléchargement */
+/* Lot 3 - Fichier numérisé d'une pièce (F-M4-02) : téléversement et téléchargement */
 r.put('/:id/pieces/:pieceId/fichier', exiger('import'), express.raw({ type: '*/*', limit: '8mb' }), async (req, res) => {
   const { rows: piece } = await query(
     'SELECT id FROM dossier_pieces WHERE id=$1 AND dossier_id=$2', [req.params.pieceId, req.params.id]);
@@ -657,23 +657,23 @@ r.get('/:id/ecritures', async (req, res) => {
     if (round(debit, 0) === 0 && round(credit, 0) === 0) return;
     ecritures.push({ dossier: dossier.reference, compte, libelle, debit: round(debit, 0), credit: round(credit, 0) });
   };
-  push('31', `Stock marchandises — dossier ${dossier.reference}`, coutTotal, 0);
+  push('31', `Stock marchandises - dossier ${dossier.reference}`, coutTotal, 0);
   for (const t of taxesCreance) {
     const compte = t.code_taxe === 'TVA' ? '4452' : '449';
-    push(compte, `${t.libelle || t.code_taxe} — créance sur l'État`, Number(t.montant), 0);
+    push(compte, `${t.libelle || t.code_taxe} - créance sur l'État`, Number(t.montant), 0);
   }
-  push('6', `Charges de période non capitalisables — dossier ${dossier.reference}`, chargesPeriode, 0);
-  push('401', `Fournisseur ${dossier.fournisseur_code || ''} — facture marchandises`, 0, valeurAchat);
-  push('401T', 'Transitaire et prestataires — frais accessoires', 0, accessoiresCap + chargesPeriode);
+  push('6', `Charges de période non capitalisables - dossier ${dossier.reference}`, chargesPeriode, 0);
+  push('401', `Fournisseur ${dossier.fournisseur_code || ''} - facture marchandises`, 0, valeurAchat);
+  push('401T', 'Transitaire et prestataires - frais accessoires', 0, accessoiresCap + chargesPeriode);
   const totalTaxes = taxes.reduce((s, t) => s + Number(t.montant), 0);
-  push('447', 'État — droits et taxes liquidés', 0, totalTaxes);
+  push('447', 'État - droits et taxes liquidés', 0, totalTaxes);
 
   // Équilibrage : les taxes d'articles de déclaration sans ligne rattachée ne sont pas
   // capitalisées dans le stock ; elles passent en compte d'attente, à régulariser.
   let totalDebit = ecritures.reduce((s, e) => s + e.debit, 0);
   let totalCredit = ecritures.reduce((s, e) => s + e.credit, 0);
   const ecart = round(totalDebit - totalCredit, 0);
-  if (ecart !== 0) push('4718', 'Compte d’attente — écart à régulariser (arrondis, lignes non rattachées)', ecart < 0 ? -ecart : 0, ecart > 0 ? ecart : 0);
+  if (ecart !== 0) push('4718', 'Compte d’attente - écart à régulariser (arrondis, lignes non rattachées)', ecart < 0 ? -ecart : 0, ecart > 0 ? ecart : 0);
   totalDebit = ecritures.reduce((s, e) => s + e.debit, 0);
   totalCredit = ecritures.reduce((s, e) => s + e.credit, 0);
 

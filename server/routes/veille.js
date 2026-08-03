@@ -1,5 +1,5 @@
 'use strict';
-/* Module M7 : veille concurrentielle — relevés terrain, imports, indices de prix. */
+/* Module M7 : veille concurrentielle - relevés terrain, imports, indices de prix. */
 const express = require('express');
 const { query } = require('../db');
 const { exiger, auditer } = require('../auth');

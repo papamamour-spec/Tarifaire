@@ -12,7 +12,7 @@ function specOpenApi() {
   return {
     openapi: '3.0.3',
     info: {
-      title: 'Tarifaire — interface applicative',
+      title: 'Tarifaire - interface applicative',
       version: '2.0.0',
       description: 'Plateforme de gestion du prix de revient et de la politique tarifaire (Sénégal / UEMOA). ' +
         'Toutes les routes sauf /connexion et /sante exigent un jeton Bearer. ' +
@@ -37,7 +37,7 @@ function specOpenApi() {
       'GET /api/referentiels/conditions-achat': op('Conditions d’achat (paramètre article)', 'lecture'),
       'POST /api/referentiels/conditions-achat': op('Nouvelle condition d’achat (le premier fournisseur devient principal)', 'acheteur'),
       'DELETE /api/referentiels/conditions-achat/{id}': op('Suppression d’une condition', 'acheteur'),
-      'POST /api/referentiels/articles/{code}/fournisseur-principal': op('{fournisseur_code} — exige une condition d’achat', 'acheteur'),
+      'POST /api/referentiels/articles/{code}/fournisseur-principal': op('{fournisseur_code} - exige une condition d’achat', 'acheteur'),
       'GET /api/referentiels/articles/{code}/comparaison-fournisseurs': op('Conditions par fournisseur, prix net converti en F CFA', 'lecture'),
       'POST /api/referentiels/articles/{code}/codes-barres': op('Ajout d’un code barres secondaire {code_barres, description}', 'acheteur'),
       'POST /api/referentiels/articles/{code}/liens': op('Article lié {article_lie_code, type_lien: lot|uvc|remplacement|variante}', 'acheteur'),
@@ -60,7 +60,7 @@ function specOpenApi() {
       'GET /api/dossiers/{id}': op('Dossier complet : lignes, pièces, coûts, déclaration, résultats', 'lecture'),
       'POST /api/dossiers/{id}/statut': op('Changement de statut ; la clôture apprend les barèmes de provision', 'import', '{statut}'),
       'POST /api/dossiers/{id}/lignes': op('Ajout/modification d’une ligne de facture', 'import'),
-      'POST /api/dossiers/{id}/lignes-import/csv': op('Import de facture {contenu, remplacer} — appariement par code barres, transactionnel', 'import'),
+      'POST /api/dossiers/{id}/lignes-import/csv': op('Import de facture {contenu, remplacer} - appariement par code barres, transactionnel', 'import'),
       'POST /api/dossiers/{id}/couts': op('Ajout d’un coût accessoire avec clé de répartition', 'import'),
       'POST /api/dossiers/{id}/declaration': op('Ajout d’un article de déclaration', 'import'),
       'POST /api/dossiers/{id}/declaration-import/csv': op('Import de la déclaration {contenu}', 'import'),

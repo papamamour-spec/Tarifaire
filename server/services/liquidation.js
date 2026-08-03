@@ -1,6 +1,6 @@
 'use strict';
 /*
- * Moteur de liquidation douanière — configuration déclarative (F-M2-02).
+ * Moteur de liquidation douanière - configuration déclarative (F-M2-02).
  * Chaque taxe est définie par son ordre, son taux (ou le taux de la position pour le
  * droit de douane), sa base exprimée en composants (VD + codes de taxes déjà calculées)
  * et son traitement comptable : 'cout' (incorporé au stock) ou 'creance' (créance sur l'État).
