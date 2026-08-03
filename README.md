@@ -33,6 +33,12 @@ Adapté au contexte ouest-africain : interface légère sans dépendance externe
 
 Le schéma de base se crée et s'amorce automatiquement au démarrage (idempotent). La sonde de disponibilité est exposée sur `/api/sante` (déjà configurée dans `railway.json`).
 
+### Dépannage du déploiement
+
+- Le serveur démarre **même si la base n'est pas encore prête** : `/api/sante` répond immédiatement (`base: "en_attente"` puis `"connectee"`), et les routes métier renvoient 503 avec le motif tant que la connexion n'est pas établie. Consultez les *Deploy Logs* : chaque tentative de connexion y est tracée avec l'erreur exacte.
+- **`DATABASE_URL` manquante** : le service PostgreSQL doit exister dans le projet **et** la variable doit être ajoutée sur le service applicatif (`${{Postgres.DATABASE_URL}}`), puis redéployer.
+- **TLS** : les URL internes Railway (`*.railway.internal`) ne supportent pas TLS — le serveur le détecte et bascule automatiquement ; `PGSSL=1` ou `PGSSL=0` permettent de forcer un mode.
+
 ## Démarrage local
 
 ```bash
