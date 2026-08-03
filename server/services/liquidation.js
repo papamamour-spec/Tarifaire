@@ -49,17 +49,27 @@ async function chargerExonerations() {
   return rows;
 }
 
-// Retourne le taux applicable après exonérations éventuelles (par origine et/ou préfixe de position).
-function tauxApplicable(taxe, position, origine, exonerations) {
-  let taux = taxe.taux_depuis_position ? (position ? Number(position.taux_dd) : 0) : Number(taxe.taux || 0);
-  for (const ex of exonerations) {
-    if (ex.code_taxe !== taxe.code) continue;
-    const codeReference = position ? (position.code_demande || position.code) : '';
-    const okPos = !ex.position_prefixe || (position && codeReference.startsWith(ex.position_prefixe));
-    const okOri = !ex.origine || (origine && origine.toUpperCase() === ex.origine.toUpperCase());
-    if (okPos && okOri) taux = Number(ex.taux_applique);
-  }
-  return taux;
+/*
+ * Taux applicable d'une taxe après règles par produit et origine (accises, TCI,
+ * exonérations…). Parmi les règles qui correspondent, LA PLUS SPÉCIFIQUE l'emporte :
+ * préfixe de position le plus long d'abord, et à préfixe égal, la règle qui précise
+ * une origine prime sur la règle générale.
+ */
+function tauxApplicable(taxe, position, origine, regles) {
+  const tauxBase = taxe.taux_depuis_position ? (position ? Number(position.taux_dd) : 0) : Number(taxe.taux || 0);
+  const codeReference = position ? (position.code_demande || position.code) : '';
+  const correspondantes = regles.filter(r => {
+    if (r.code_taxe !== taxe.code) return false;
+    const okPos = !r.position_prefixe || (codeReference && codeReference.startsWith(r.position_prefixe));
+    const okOri = !r.origine || (origine && origine.toUpperCase() === r.origine.toUpperCase());
+    return okPos && okOri;
+  });
+  if (!correspondantes.length) return { taux: tauxBase, regle: null };
+  correspondantes.sort((a, b) =>
+    ((b.position_prefixe || '').length - (a.position_prefixe || '').length) ||
+    ((b.origine ? 1 : 0) - (a.origine ? 1 : 0)));
+  const retenue = correspondantes[0];
+  return { taux: Number(retenue.taux_applique), regle: retenue.commentaire || `règle ${retenue.position_prefixe || 'toutes positions'}${retenue.origine ? ' origine ' + retenue.origine : ''}` };
 }
 
 /*
@@ -77,7 +87,7 @@ async function liquider({ valeurEnDouane, positionCode, origine, date }) {
     const composants = String(taxe.base_composants || 'VD').split('+').map(s => s.trim()).filter(Boolean);
     let base = 0;
     for (const c of composants) base += Number(montants[c] || 0);
-    const taux = tauxApplicable(taxe, position, origine, exonerations);
+    const { taux, regle } = tauxApplicable(taxe, position, origine, exonerations);
     const montant = round(base * taux / 100, 0);
     montants[taxe.code] = montant;
     lignes.push({
@@ -86,7 +96,8 @@ async function liquider({ valeurEnDouane, positionCode, origine, date }) {
       base: round(base, 0),
       taux,
       montant,
-      traitement: taxe.traitement
+      traitement: taxe.traitement,
+      regle_appliquee: regle
     });
   }
   const total = lignes.reduce((s, l) => s + l.montant, 0);

@@ -553,18 +553,7 @@ async function seed() {
     ('entreprise','Enseigne de démonstration')
     ON CONFLICT (cle) DO NOTHING`);
 
-  // Codes taxes type liquidation Sénégal / UEMOA (paramétrables, taxes en cascade).
-  // base_composants : VD = valeur en douane, sinon liste de codes taxes déjà calculés, séparés par +
-  await query(`INSERT INTO codes_taxes (code, libelle, ordre, taux, taux_depuis_position, base_composants, traitement) VALUES
-    ('DD',  'Droit de douane (TEC UEMOA)',            1, NULL, TRUE,  'VD', 'cout'),
-    ('RS',  'Redevance statistique',                  2, 1,    FALSE, 'VD', 'cout'),
-    ('PCS', 'Prélèvement communautaire de solidarité UEMOA', 3, 0.8, FALSE, 'VD', 'cout'),
-    ('PCC', 'Prélèvement communautaire CEDEAO',       4, 0.5,  FALSE, 'VD', 'cout'),
-    ('COSEC','Redevance COSEC',                       5, 0.4,  FALSE, 'VD', 'cout'),
-    ('ACC', 'Droit d''accise',                        6, 0,    FALSE, 'VD+DD+RS', 'cout'),
-    ('TVA', 'TVA à l''importation',                   7, 18,   FALSE, 'VD+DD+RS+PCS+PCC+COSEC+ACC', 'creance'),
-    ('AIB', 'Acompte d''impôt sur le bénéfice',       8, 3,    FALSE, 'VD', 'creance')
-    ON CONFLICT (code) DO NOTHING`);
+  // Codes taxes : peuplés par seedFiscalite() (données server/data/taxes_senegal.js)
 
   // Catégories du TEC UEMOA : 0 %, 5 %, 10 %, 20 %, 35 %
   await query(`INSERT INTO positions_tarifaires (code, libelle, categorie, taux_dd) VALUES
@@ -633,6 +622,45 @@ async function seedNomenclature() {
   });
 }
 
+/*
+ * Fiscalité de porte sénégalaise : codes taxes en cascade et règles spécifiques par
+ * produit (accises, TCI, exonérations de TVA, origine communautaire). Idempotent :
+ * n'écrase jamais un code taxe modifié ni une règle déjà présente. Migration ciblée :
+ * la base de la TVA n'est mise à jour que si elle porte encore sa valeur d'origine.
+ */
+async function seedFiscalite() {
+  const { CODES_TAXES, REGLES } = require('./data/taxes_senegal');
+  await transaction(async q => {
+    for (const [code, libelle, ordre, taux, depuisPosition, base, traitement] of CODES_TAXES) {
+      await q(
+        `INSERT INTO codes_taxes (code, libelle, ordre, taux, taux_depuis_position, base_composants, traitement)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (code) DO NOTHING`,
+        [code, libelle, ordre, taux, depuisPosition, base, traitement]);
+    }
+    // Bases historiques : y insérer la TCI uniquement si le paramétrage n'a pas été touché
+    await q(
+      `UPDATE codes_taxes SET base_composants='VD+DD+RS+PCS+PCC+COSEC+TCI+ACC'
+        WHERE code='TVA' AND base_composants='VD+DD+RS+PCS+PCC+COSEC+ACC'`);
+    await q(
+      `UPDATE codes_taxes SET ordre=7 WHERE code='ACC' AND ordre=6`);
+    await q(
+      `UPDATE codes_taxes SET ordre=8 WHERE code='TVA' AND ordre=7`);
+    await q(
+      `UPDATE codes_taxes SET ordre=9 WHERE code='AIB' AND ordre=8`);
+    for (const [prefixe, origine, codeTaxe, taux, commentaire] of REGLES) {
+      const { rows } = await q(
+        `SELECT 1 FROM exonerations WHERE position_prefixe=$1 AND origine=$2 AND code_taxe=$3`,
+        [prefixe, origine, codeTaxe]);
+      if (!rows.length) {
+        await q(
+          `INSERT INTO exonerations (position_prefixe, origine, code_taxe, taux_applique, commentaire)
+           VALUES ($1,$2,$3,$4,$5)`,
+          [prefixe, origine, codeTaxe, taux, commentaire]);
+      }
+    }
+  });
+}
+
 async function init() {
   if (!process.env.DATABASE_URL) {
     console.warn('[base] DATABASE_URL non définie : tentative sur postgres://localhost:5432/tarifaire. ' +
@@ -643,6 +671,7 @@ async function init() {
   await extensionsRecherche();
   await seed();
   await seedNomenclature();
+  await seedFiscalite();
 }
 
 module.exports = { query, init, transaction };

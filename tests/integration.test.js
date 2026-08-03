@@ -468,6 +468,67 @@ test('nomenclature TEC : base préchargée et résolution hiérarchique', { skip
   assert.equal(exoneree.lignes.find(l => l.code === 'DD').montant, 0);
 });
 
+test('fiscalité Sénégal : accises par produit, TCI, exonérations TVA, règle la plus spécifique', { skip: !actif }, async () => {
+  // Bière : accise 40 % et TVA assise sur la cascade incluant l'accise
+  const biere = await api('/douane/simulation', {
+    method: 'POST', body: { valeur_en_douane: 1000000, position_tarifaire: '2203001000' }
+  });
+  const accBiere = biere.lignes.find(l => l.code === 'ACC');
+  assert.equal(accBiere.taux, 40);
+  assert.ok(accBiere.regle_appliquee, 'la règle appliquée doit être restituée');
+  const tvaBiere = biere.lignes.find(l => l.code === 'TVA');
+  assert.ok(tvaBiere.base > 1000000 + accBiere.montant - 1, 'la base TVA doit inclure l’accise');
+
+  // Boisson gazeuse : accise 5 % (règle 2202 plus spécifique que rien)
+  const soda = await api('/douane/simulation', {
+    method: 'POST', body: { valeur_en_douane: 1000000, position_tarifaire: '2202990000' }
+  });
+  assert.equal(soda.lignes.find(l => l.code === 'ACC').taux, 5);
+
+  // Cigarettes : accise 65 %
+  const tabac = await api('/douane/simulation', {
+    method: 'POST', body: { valeur_en_douane: 1000000, position_tarifaire: '2402209000' }
+  });
+  assert.equal(tabac.lignes.find(l => l.code === 'ACC').taux, 65);
+
+  // Sucre : TCI 10 %
+  const sucre = await api('/douane/simulation', {
+    method: 'POST', body: { valeur_en_douane: 1000000, position_tarifaire: '1701999000' }
+  });
+  assert.equal(sucre.lignes.find(l => l.code === 'TCI').taux, 10);
+  assert.equal(sucre.lignes.find(l => l.code === 'TCI').montant, 100000);
+
+  // Riz : TVA exonérée (créance TVA nulle), droits de douane 10 % maintenus
+  const riz = await api('/douane/simulation', {
+    method: 'POST', body: { valeur_en_douane: 1000000, position_tarifaire: '1006309000' }
+  });
+  assert.equal(riz.lignes.find(l => l.code === 'TVA').taux, 0);
+  assert.equal(riz.lignes.find(l => l.code === 'DD').taux, 10);
+
+  // Médicaments (préfixe chapitre 30) : TVA exonérée
+  const medicament = await api('/douane/simulation', {
+    method: 'POST', body: { valeur_en_douane: 1000000, position_tarifaire: '3004909000' }
+  });
+  assert.equal(medicament.lignes.find(l => l.code === 'TVA').taux, 0);
+
+  // Huile de palme brute (151110) : hors accise corps gras, contrairement à la margarine (1517)
+  const huileBrute = await api('/douane/simulation', {
+    method: 'POST', body: { valeur_en_douane: 1000000, position_tarifaire: '1511101000' }
+  });
+  assert.equal(huileBrute.lignes.find(l => l.code === 'ACC').taux, 0);
+  const margarine = await api('/douane/simulation', {
+    method: 'POST', body: { valeur_en_douane: 1000000, position_tarifaire: '1517100000' }
+  });
+  assert.equal(margarine.lignes.find(l => l.code === 'ACC').taux, 15);
+
+  // Origine communautaire : droit de douane à 0 pour un produit ivoirien, mais l'accise demeure
+  const cafeIvoirien = await api('/douane/simulation', {
+    method: 'POST', body: { valeur_en_douane: 1000000, position_tarifaire: '0901210000', origine: 'CI' }
+  });
+  assert.equal(cafeIvoirien.lignes.find(l => l.code === 'DD').taux, 0);
+  assert.equal(cafeIvoirien.lignes.find(l => l.code === 'ACC').taux, 5);
+});
+
 test('lot 4 : documentation API disponible sans jeton', { skip: !actif }, async () => {
   const rep = await fetch(`${B}/docs`);
   assert.equal(rep.ok, true);
