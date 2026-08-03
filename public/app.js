@@ -52,6 +52,254 @@ function deconnexion() {
   rendre();
 }
 
+/* ------------------- Assistant d'import avec correspondance des colonnes (F-M10-04) ------------------- */
+
+// Analyse un collage tableur : détecte le séparateur (tabulation prioritaire : collage Excel), gère les guillemets.
+function analyserTableur(texte) {
+  const premiere = texte.slice(0, texte.indexOf('\n') === -1 ? texte.length : texte.indexOf('\n'));
+  let sep = '\t';
+  if (!premiere.includes('\t')) sep = (premiere.split(';').length >= premiere.split(',').length) ? ';' : ',';
+  const lignes = [];
+  let ligne = [], champ = '', guillemets = false;
+  for (let i = 0; i < texte.length; i++) {
+    const c = texte[i];
+    if (guillemets) {
+      if (c === '"') { if (texte[i + 1] === '"') { champ += '"'; i++; } else guillemets = false; }
+      else champ += c;
+    } else if (c === '"') guillemets = true;
+    else if (c === sep) { ligne.push(champ); champ = ''; }
+    else if (c === '\n') { ligne.push(champ); champ = ''; if (ligne.some(v => v.trim() !== '')) lignes.push(ligne); ligne = []; }
+    else if (c !== '\r') champ += c;
+  }
+  ligne.push(champ);
+  if (ligne.some(v => v.trim() !== '')) lignes.push(ligne);
+  if (!lignes.length) return { entetes: [], lignes: [] };
+  return { entetes: lignes[0].map(h => h.trim()), lignes: lignes.slice(1) };
+}
+
+function normaliserEntete(h) {
+  return String(h).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+// Nettoyages de valeurs propres aux fichiers réels
+function nettoyerEan(v) {
+  const s = String(v || '').trim();
+  if (/^\d+[,.]\d+e\+?\d+$/i.test(s)) return { valeur: '', corrompu: true }; // notation scientifique Excel : chiffres perdus
+  const chiffres = s.replace(/\D/g, '');
+  return { valeur: chiffres, corrompu: false };
+}
+function nettoyerPosition(v) {
+  const chiffres = String(v || '').replace(/\D/g, '');
+  if (!chiffres) return '';
+  if (chiffres.length >= 10) return chiffres.slice(0, 10);
+  if (chiffres.length >= 6) return chiffres.padEnd(10, '0'); // nomenclature à 6-9 chiffres complétée à droite
+  return '';
+}
+function nombreFr(v) {
+  if (v === null || v === undefined || String(v).trim() === '') return '';
+  const n = parseFloat(String(v).replace(/\s/g, '').replace(',', '.'));
+  return isFinite(n) ? n : '';
+}
+
+/*
+ * Champs cibles par type d'import. `syn` : noms de colonnes reconnus automatiquement
+ * (normalisés). `aux` : champ intermédiaire servant aux dérivations, non exporté tel quel.
+ */
+const CIBLES_IMPORT = {
+  articles: [
+    { cle: 'code_interne', libelle: 'Code interne *', oblig: true, syn: ['code interne', 'article', 'code article', 'reference', 'ref', 'code', 'no article', 'numero article'] },
+    { cle: 'code_barres', libelle: 'Code barres EAN', syn: ['code barres', 'code ean', 'ean', 'ean13', 'gencod', 'code barre', 'codes barres'] },
+    { cle: 'libelle', libelle: 'Libellé *', oblig: true, syn: ['libelle', 'designation', 'designation article', 'nom', 'description', 'libelle article'] },
+    { cle: 'famille', libelle: 'Famille', syn: ['famille', 'rayon', 'departement', 'categorie'] },
+    { cle: 'fournisseur', libelle: 'Fournisseur', syn: ['fournisseur', 'code fournisseur'] },
+    { cle: 'reference_fournisseur', libelle: 'Réf. fournisseur', syn: ['reference fournisseur', 'ref fournisseur'] },
+    { cle: 'unites_par_carton', libelle: 'Unités par carton', syn: ['unites par carton', 'pcb', 'colisage', 'uc'] },
+    { cle: 'nb_colis', libelle: 'Nombre de colis (dérivation)', aux: true, syn: ['nbre colis', 'nb colis', 'nombre de colis', 'colis'] },
+    { cle: 'quantite_aux', libelle: 'Quantité (dérivation)', aux: true, syn: ['quantite facturee', 'quantite', 'qte facturee', 'qte'] },
+    { cle: 'poids_net_total', libelle: 'Poids net de la ligne (dérivation)', aux: true, syn: ['poids net'] },
+    { cle: 'poids_brut_total', libelle: 'Poids brut de la ligne (dérivation)', aux: true, syn: ['poids brut'] },
+    { cle: 'volume_total', libelle: 'Volume de la ligne (dérivation)', aux: true, syn: ['volume', 'volume m3', 'vol'] },
+    { cle: 'poids_brut_carton', libelle: 'Poids brut par carton (kg)', syn: ['poids brut carton', 'poids carton'] },
+    { cle: 'volume_carton', libelle: 'Volume par carton (m³)', syn: ['volume carton'] },
+    { cle: 'position_tarifaire', libelle: 'Position tarifaire / nomenclature', syn: ['position tarifaire', 'nomenclature douaniere', 'nomenclature', 'code sh', 'hs code', 'position', 'code douanier'] },
+    { cle: 'origine', libelle: 'Origine (code pays)', syn: ['origine', 'code pays', 'pays origine', 'pays'] },
+    { cle: 'taux_tva_vente', libelle: 'TVA vente (%)', syn: ['taux tva vente', 'taux tva', 'tva'] },
+    { cle: 'statut', libelle: 'Statut', syn: ['statut'] }
+  ],
+  facture: [
+    { cle: 'code_barres', libelle: 'Code barres EAN', syn: ['code barres', 'code ean', 'ean', 'ean13', 'gencod', 'code barre'] },
+    { cle: 'code_interne', libelle: 'Code interne', syn: ['code interne', 'article', 'code article', 'reference', 'ref', 'code', 'no article'] },
+    { cle: 'libelle', libelle: 'Libellé', syn: ['libelle', 'designation', 'designation article', 'nom', 'description'] },
+    { cle: 'quantite', libelle: 'Quantité *', oblig: true, syn: ['quantite', 'quantite facturee', 'qte', 'qte facturee'] },
+    { cle: 'prix_unitaire', libelle: 'Prix unitaire *', oblig: true, syn: ['prix unitaire', 'prix de vente', 'prix achat', 'pu', 'prix', 'prix unitaire ht'] },
+    { cle: 'nb_cartons', libelle: 'Nombre de colis', syn: ['nbre colis', 'nb colis', 'nombre de colis', 'colis'] },
+    { cle: 'poids_brut', libelle: 'Poids brut de la ligne (kg)', syn: ['poids brut', 'poids'] },
+    { cle: 'volume', libelle: 'Volume de la ligne (m³)', syn: ['volume', 'volume m3', 'vol'] },
+    { cle: 'declaration_rang', libelle: 'N° article de déclaration', syn: ['declaration rang', 'rang declaration', 'decl'] }
+  ]
+};
+
+function autoMapper(entetes, cibles, type) {
+  // Correspondance mémorisée pour cette signature de fichier (F-M10-04)
+  const signature = entetes.map(normaliserEntete).join('|');
+  const memoire = JSON.parse(localStorage.getItem('tarifaire_mappings') || '{}');
+  if (memoire[type + '|' + signature]) return { mapping: memoire[type + '|' + signature], memorise: true };
+  const normalises = entetes.map(normaliserEntete);
+  const mapping = {};
+  for (const cible of cibles) {
+    let indice = -1;
+    for (const s of cible.syn) {
+      indice = normalises.indexOf(s);
+      if (indice !== -1) break;
+    }
+    if (indice === -1) indice = normalises.findIndex(n => cible.syn.some(s => n.includes(s) && s.length > 3));
+    if (indice !== -1 && !Object.values(mapping).includes(indice)) mapping[cible.cle] = indice;
+  }
+  return { mapping, memorise: false };
+}
+
+function memoriserMapping(entetes, type, mapping) {
+  const signature = entetes.map(normaliserEntete).join('|');
+  const memoire = JSON.parse(localStorage.getItem('tarifaire_mappings') || '{}');
+  memoire[type + '|' + signature] = mapping;
+  localStorage.setItem('tarifaire_mappings', JSON.stringify(memoire));
+}
+
+/*
+ * Transforme les lignes source en enregistrements canoniques.
+ * Dérivations : poids/volume par carton depuis les totaux de ligne et le nombre de colis,
+ * unités par carton depuis quantité et colis, EAN corrompus signalés, positions complétées à 10 chiffres.
+ */
+function transformerLignes(type, lignes, mapping) {
+  const avertissements = { ean_corrompus: 0, positions_completees: 0 };
+  const enregistrements = lignes.map(l => {
+    const v = cle => (mapping[cle] !== undefined && mapping[cle] !== null && mapping[cle] !== '' ? String(l[mapping[cle]] ?? '').trim() : '');
+    const e = {};
+    if (type === 'articles') {
+      e.code_interne = v('code_interne');
+      const ean = nettoyerEan(v('code_barres'));
+      if (ean.corrompu) avertissements.ean_corrompus++;
+      e.code_barres = ean.valeur;
+      e.libelle = v('libelle');
+      e.famille = v('famille');
+      e.fournisseur = v('fournisseur');
+      e.reference_fournisseur = v('reference_fournisseur');
+      const nbColis = nombreFr(v('nb_colis'));
+      const quantite = nombreFr(v('quantite_aux'));
+      e.unites_par_carton = nombreFr(v('unites_par_carton')) ||
+        (nbColis && quantite ? Math.round(quantite / nbColis) : '');
+      e.poids_brut_carton = nombreFr(v('poids_brut_carton')) ||
+        (nbColis && nombreFr(v('poids_brut_total')) ? Math.round(nombreFr(v('poids_brut_total')) / nbColis * 1000) / 1000 : '');
+      e.poids_net_unitaire = (quantite && nombreFr(v('poids_net_total')))
+        ? Math.round(nombreFr(v('poids_net_total')) / quantite * 1000) / 1000 : '';
+      e.volume_carton = nombreFr(v('volume_carton')) ||
+        (nbColis && nombreFr(v('volume_total')) ? Math.round(nombreFr(v('volume_total')) / nbColis * 100000) / 100000 : '');
+      const brut = String(v('position_tarifaire')).replace(/\D/g, '');
+      e.position_tarifaire = nettoyerPosition(v('position_tarifaire'));
+      if (e.position_tarifaire && brut.length < 10) avertissements.positions_completees++;
+      const origine = v('origine').toUpperCase();
+      e.origine = /^[A-Z]{2}$/.test(origine) ? origine : '';
+      e.taux_tva_vente = nombreFr(v('taux_tva_vente'));
+      e.statut = v('statut') || 'actif';
+      e.longueur_carton = ''; e.largeur_carton = ''; e.hauteur_carton = '';
+    } else {
+      const ean = nettoyerEan(v('code_barres'));
+      if (ean.corrompu) avertissements.ean_corrompus++;
+      e.code_barres = ean.valeur;
+      e.code_interne = v('code_interne');
+      e.libelle = v('libelle');
+      e.quantite = nombreFr(v('quantite'));
+      e.prix_unitaire = nombreFr(v('prix_unitaire'));
+      e.nb_cartons = nombreFr(v('nb_cartons'));
+      e.poids_brut = nombreFr(v('poids_brut'));
+      e.volume = nombreFr(v('volume'));
+      e.declaration_rang = nombreFr(v('declaration_rang'));
+    }
+    return e;
+  });
+  return { enregistrements, avertissements };
+}
+
+function enregistrementsVersCsv(enregistrements, colonnes) {
+  const echapper = x => /[";\n]/.test(String(x)) ? '"' + String(x).replace(/"/g, '""') + '"' : String(x);
+  return [colonnes.join(';')]
+    .concat(enregistrements.map(e => colonnes.map(c => echapper(e[c] ?? '')).join(';')))
+    .join('\n');
+}
+
+/*
+ * Monte l'assistant dans `conteneur`. `type` : articles | facture.
+ * `envoyer(csvCanonique)` est appelé à la validation et doit retourner le rapport d'import.
+ */
+function monterAssistantImport({ conteneur, type, envoyer, note }) {
+  const cibles = CIBLES_IMPORT[type];
+  conteneur.innerHTML = `
+    <p class="petite-note">${note || ''} Collez votre fichier tel quel (export Excel, CSV, tableur) : l'assistant reconnaît les colonnes, même avec d'autres noms (Rayon, PCB, Code EAN, Nomenclature Douanière…), et mémorise votre correspondance pour la prochaine fois.</p>
+    <textarea id="ai-texte" placeholder="Collez ici le contenu du fichier, entêtes comprises…"></textarea>
+    <div class="actions-page"><button id="ai-analyser">Analyser le fichier</button></div>
+    <div id="ai-mapping"></div>
+    <div id="ai-rapport"></div>`;
+  const zoneMapping = conteneur.querySelector('#ai-mapping');
+  const zoneRapport = conteneur.querySelector('#ai-rapport');
+
+  conteneur.querySelector('#ai-analyser').onclick = () => {
+    const { entetes, lignes } = analyserTableur(conteneur.querySelector('#ai-texte').value);
+    if (!entetes.length || !lignes.length) {
+      zoneRapport.innerHTML = '<div class="message erreur">Aucune donnée détectée : collez le fichier avec sa ligne d\'entêtes.</div>';
+      return;
+    }
+    const { mapping, memorise } = autoMapper(entetes, cibles, type);
+    const rendreApercu = () => {
+      const mappingActuel = {};
+      cibles.forEach(c => {
+        const sel = zoneMapping.querySelector(`#ai-map-${c.cle}`);
+        if (sel && sel.value !== '') mappingActuel[c.cle] = Number(sel.value);
+      });
+      const { enregistrements, avertissements } = transformerLignes(type, lignes.slice(0, 3), mappingActuel);
+      const colonnesApercu = cibles.filter(c => !c.aux).map(c => c.cle);
+      zoneMapping.querySelector('#ai-apercu').innerHTML = `
+        <h3>Aperçu des 3 premières lignes transformées</h3>
+        <div class="table-defilante"><table>
+          <tr>${colonnesApercu.map(c => `<th>${esc(c)}</th>`).join('')}</tr>
+          ${enregistrements.map(e => `<tr>${colonnesApercu.map(c => `<td>${esc(e[c] ?? '')}</td>`).join('')}</tr>`).join('')}
+        </table></div>
+        ${avertissements.ean_corrompus ? `<div class="message erreur">Codes EAN en notation scientifique (« 3,24541E+12 ») : Excel a détruit ces codes, ils seront importés vides. Pour les conserver, formatez la colonne EAN en « Texte » dans Excel avant de copier.</div>` : ''}`;
+      return mappingActuel;
+    };
+    zoneMapping.innerHTML = `
+      ${memorise ? '<div class="message ok">Correspondance retrouvée : ce format de fichier a déjà été importé.</div>'
+        : '<div class="message info">Colonnes reconnues automatiquement. Vérifiez puis ajustez si besoin ; votre choix sera mémorisé.</div>'}
+      <div class="ligne-champs">
+        ${cibles.map(c => `<label class="champ">${esc(c.libelle)}<select id="ai-map-${c.cle}">
+          <option value="">(ignorer)</option>
+          ${entetes.map((h, i) => `<option value="${i}" ${mapping[c.cle] === i ? 'selected' : ''}>${esc(h)}</option>`).join('')}
+        </select></label>`).join('')}
+      </div>
+      <div id="ai-apercu"></div>
+      <div class="actions-page"><button id="ai-importer">Importer ${lignes.length} ligne(s)</button></div>`;
+    zoneMapping.querySelectorAll('select').forEach(s => s.onchange = rendreApercu);
+    rendreApercu();
+    zoneMapping.querySelector('#ai-importer').onclick = async () => {
+      const mappingActuel = rendreApercu();
+      const manquantes = cibles.filter(c => c.oblig && mappingActuel[c.cle] === undefined);
+      if (manquantes.length) {
+        zoneRapport.innerHTML = `<div class="message erreur">Colonnes obligatoires non associées : ${manquantes.map(c => esc(c.libelle)).join(', ')}.</div>`;
+        return;
+      }
+      memoriserMapping(entetes, type, mappingActuel);
+      const { enregistrements, avertissements } = transformerLignes(type, lignes, mappingActuel);
+      const colonnes = cibles.filter(c => !c.aux).map(c => c.cle);
+      try {
+        zoneRapport.innerHTML = '<div class="message info">Import en cours…</div>';
+        const rapport = await envoyer(enregistrementsVersCsv(enregistrements, colonnes));
+        zoneRapport.innerHTML = `<div class="message ok">${esc(rapport)}</div>
+          ${avertissements.ean_corrompus ? `<div class="message erreur">${avertissements.ean_corrompus} code(s) EAN corrompu(s) par Excel importé(s) sans code barres : complétez-les depuis les fiches articles.</div>` : ''}
+          ${avertissements.positions_completees ? `<div class="message info">${avertissements.positions_completees} nomenclature(s) douanière(s) complétée(s) à 10 chiffres (zéros à droite) : vérifiez-les dans Douane & fiscalité.</div>` : ''}`;
+      } catch (e) { zoneRapport.innerHTML = `<div class="message erreur">${esc(e.message)}</div>`; }
+    };
+  };
+}
+
 /* ---------------------------------- Routeur ---------------------------------- */
 const routes = {
   '': vueTableau, 'tableau': vueTableau, 'articles': vueArticles, 'article': vueFicheArticle,
@@ -371,32 +619,21 @@ async function afficherOngletArticles(page) {
   document.getElementById('a-recherche').addEventListener('keydown', e => { if (e.key === 'Enter') charger(); });
   document.getElementById('a-export').onclick = () => telecharger('/referentiels/articles-export/csv', 'referentiel_articles.csv');
   document.getElementById('a-import').onclick = () => {
-    document.getElementById('a-zone-import').innerHTML = `
-      <div class="carte">
-        <h3>Import du référentiel (format Annexe B)</h3>
-        <p class="petite-note">Colonnes : code_interne;code_barres;libelle;famille;fournisseur;reference_fournisseur;unites_par_carton;poids_net_unitaire;poids_brut_carton;longueur_carton;largeur_carton;hauteur_carton;volume_carton;position_tarifaire;origine;taux_tva_vente;statut</p>
-        <textarea id="a-csv" placeholder="Collez le contenu CSV ici…"></textarea>
-        <div class="actions-page">
-          <button id="a-previsualiser">Prévisualiser</button>
-          <button id="a-confirmer" disabled>Confirmer l'import</button>
-        </div>
-        <div id="a-rapport"></div>
-      </div>`;
-    document.getElementById('a-previsualiser').onclick = async () => {
-      try {
-        const r = await api('/referentiels/articles-import/csv', { method: 'POST', body: { contenu: val('a-csv') } });
-        document.getElementById('a-rapport').innerHTML = `<div class="message info">${r.importables} ligne(s) importable(s) sur ${r.total}. ${r.rejets.length} rejet(s).</div>
-          ${r.rejets.length ? '<ul>' + r.rejets.map(x => `<li>Ligne ${x.ligne} : ${esc(x.motif)}</li>`).join('') + '</ul>' : ''}`;
-        document.getElementById('a-confirmer').disabled = r.importables === 0;
-      } catch (e) { message('a-rapport', 'erreur', e.message); }
-    };
-    document.getElementById('a-confirmer').onclick = async () => {
-      try {
-        const r = await api('/referentiels/articles-import/csv', { method: 'POST', body: { contenu: val('a-csv'), confirmer: true } });
-        message('a-rapport', 'ok', `${r.crees} créé(s), ${r.modifies} modifié(s), ${r.rejets.length} rejet(s).`);
+    const zone = document.getElementById('a-zone-import');
+    zone.innerHTML = '<div class="carte"><h3>Import du référentiel</h3><div id="a-assistant"></div></div>';
+    monterAssistantImport({
+      conteneur: zone.querySelector('#a-assistant'),
+      type: 'articles',
+      note: 'Formats acceptés : Annexe B du CDC ou tout export (facture fournisseur, liste de colisage…).',
+      envoyer: async csv => {
+        const r = await api('/referentiels/articles-import/csv', { method: 'POST', body: { contenu: csv, confirmer: true } });
         charger();
-      } catch (e) { message('a-rapport', 'erreur', e.message); }
-    };
+        let compte = `${r.crees} article(s) créé(s), ${r.modifies} modifié(s), ${r.rejets.length} rejet(s).`;
+        if (r.rejets.length) compte += ' Premiers rejets : ' + r.rejets.slice(0, 5).map(x => `ligne ${x.ligne} (${x.motif})`).join(' ; ');
+        if (r.avertissements && r.avertissements.length) compte += ` ${r.avertissements.length} avertissement(s) : codes barres invalides importés sans code.`;
+        return compte;
+      }
+    });
   };
   await charger();
 }
@@ -984,16 +1221,26 @@ async function vueDossierDetail(page, args) {
           </div>
         </div>
         <div class="carte">
-          <h3>Importer la facture fournisseur (CSV) · appariement automatique par code barres</h3>
-          <p class="petite-note">Colonnes : code_barres (ou code_interne);libelle;quantite;prix_unitaire;nb_cartons;poids_brut;volume;declaration_rang</p>
-          <textarea id="l-csv"></textarea>
+          <h3>Importer la facture fournisseur · appariement automatique par code barres</h3>
           <div class="actions-page">
             <label><input type="checkbox" id="l-remplacer"> Remplacer les lignes existantes</label>
-            <button id="l-importer">Importer</button>
             <button class="secondaire" id="l-rattacher">Rattacher automatiquement à la déclaration</button>
           </div>
+          <div id="l-assistant"></div>
           <div id="l-msg"></div>
         </div>`;
+      monterAssistantImport({
+        conteneur: document.getElementById('l-assistant'),
+        type: 'facture',
+        note: 'Facture fournisseur ou liste de colisage, quel que soit le format des colonnes.',
+        envoyer: async csv => {
+          const r = await api(`/dossiers/${id}/lignes-import/csv`, {
+            method: 'POST', body: { contenu: csv, remplacer: coche('l-remplacer') }
+          });
+          setTimeout(rendre, 1600);
+          return `${r.importees} ligne(s) importée(s), ${r.appariees} appariée(s) au référentiel, ${r.non_appariees} sans correspondance, ${r.rejets.length} rejet(s).`;
+        }
+      });
       window.supprLigne = async lid => { await api(`/dossiers/${id}/lignes/${lid}`, { method: 'DELETE' }); rendre(); };
       document.getElementById('l-ajouter').onclick = async () => {
         try {
@@ -1003,13 +1250,6 @@ async function vueDossierDetail(page, args) {
             body: { code_barres: /^\d{8,13}$/.test(code) ? code : null, article_code: /^\d{8,13}$/.test(code) ? null : code || null, libelle: val('l-libelle'), quantite: val('l-qte'), nb_cartons: val('l-cartons'), prix_unitaire_devise: val('l-pu'), poids_brut: val('l-poids'), volume: val('l-volume'), declaration_rang: val('l-decl') }
           });
           rendre();
-        } catch (e) { message('l-msg', 'erreur', e.message); }
-      };
-      document.getElementById('l-importer').onclick = async () => {
-        try {
-          const r = await api(`/dossiers/${id}/lignes-import/csv`, { method: 'POST', body: { contenu: val('l-csv'), remplacer: coche('l-remplacer') } });
-          message('l-msg', 'ok', `${r.importees} ligne(s) importée(s), ${r.appariees} appariée(s) au référentiel, ${r.non_appariees} sans correspondance, ${r.rejets.length} rejet(s).`);
-          setTimeout(rendre, 1200);
         } catch (e) { message('l-msg', 'erreur', e.message); }
       };
       document.getElementById('l-rattacher').onclick = async () => {

@@ -317,15 +317,18 @@ r.post('/articles-import/csv', exiger('acheteur'), async (req, res) => {
   const { contenu, confirmer } = req.body || {};
   if (!contenu) return res.status(400).json({ erreur: 'Contenu CSV requis' });
   const { records } = parseCsv(contenu);
-  const rapport = { total: records.length, crees: 0, modifies: 0, rejets: [] };
+  const rapport = { total: records.length, crees: 0, modifies: 0, rejets: [], avertissements: [] };
   const valides = [];
   records.forEach((rec, i) => {
     const ligne = i + 2;
     const code = (rec.code_interne || '').trim();
     if (!code) { rapport.rejets.push({ ligne, motif: 'code_interne manquant' }); return; }
     if (!rec.libelle) { rapport.rejets.push({ ligne, motif: 'libelle manquant' }); return; }
+    // Un EAN invalide n'empêche pas l'import : l'article entre sans code barres,
+    // signalé en avertissement (la fiche le marquera comme donnée manquante).
     if (rec.code_barres && !validerEan(rec.code_barres)) {
-      rapport.rejets.push({ ligne, motif: `code_barres invalide : ${rec.code_barres}` }); return;
+      rapport.avertissements.push({ ligne, motif: `code_barres invalide, importé sans code : ${rec.code_barres}` });
+      rec.code_barres = '';
     }
     const d = {
       code_barres: rec.code_barres || undefined, libelle: rec.libelle,

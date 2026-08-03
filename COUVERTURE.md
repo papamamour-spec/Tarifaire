@@ -164,8 +164,8 @@ Synthèse : sur les 141 exigences du CDC (98 indispensables, 36 importantes, 7 s
 | F-M10-01 | API REST documentée et versionnée | Indispensable | Couvert | /docs.html, /api/docs |
 | F-M10-02 | Jeton, limitation de débit, journalisation | Indispensable | Couvert | |
 | F-M10-03 | Import/export tableur avec modèles | Indispensable | Couvert | Formats Annexes B et C documentés |
-| F-M10-04 | Assistant de correspondance de colonnes | Indispensable | Partiel | Analyse tolérante (séparateurs, entêtes) ; pas de mappage mémorisé |
-| F-M10-05 | Prévisualisation avant import | Indispensable | Partiel | Sur le référentiel ; rapports de rejets partout |
+| F-M10-04 | Assistant de correspondance de colonnes | Indispensable | Couvert | Reconnaissance automatique des colonnes (Rayon, PCB, Code EAN, Nomenclature Douanière…), correspondance ajustable et mémorisée par format de fichier, dérivations (poids/volume par carton), EAN corrompus par Excel signalés, nomenclatures complétées à 10 chiffres |
+| F-M10-05 | Prévisualisation avant import | Indispensable | Couvert | Aperçu des lignes transformées avant validation dans l'assistant, rapports de rejets et d'avertissements partout |
 | F-M10-06 | Reprise d'import sans doublon | Indispensable | Partiel | Imports transactionnels ; l'idempotence par clé reste à faire |
 | F-M10-07 | Échanges programmés supervisés | Indispensable | Non couvert | Feuille de route |
 | F-M10-08 | Notifications sortantes (webhooks) | Important | Non couvert | Feuille de route |
